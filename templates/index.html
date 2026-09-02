@@ -17,10 +17,20 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 
   <!-- Cache-busting query parameter forces the browser to load latest CSS and JS -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=15.0" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=17.0" />
 </head>
 <body>
   <div class="app-layout">
+
+    <!-- Fullscreen File Drag-and-Drop Overlay -->
+    <div id="dropzoneOverlay" class="dropzone-overlay hidden" style="display: none;">
+      <div class="dropzone-card">
+        <div class="dropzone-icon">📥</div>
+        <h3>Drop files here to analyze</h3>
+        <p>Supports PDF, Word (.docx), TXT, and Images (PNG, JPG, WEBP)</p>
+        <button type="button" id="closeDropzoneBtn" style="margin-top: 10px; background: transparent; border: 1px solid var(--border-medium); color: var(--text-muted); border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: 13px;">✕ Close</button>
+      </div>
+    </div>
 
     <!-- Mobile Top Navigation Header -->
     <div class="mobile-topbar">
@@ -52,11 +62,30 @@
           <h1 class="brand-title">Cloud AI Chatbot</h1>
         </div>
 
-        <!-- Prominent + New Chat Button -->
+        <!-- Prominent New Chat Button -->
         <button id="newChatBtn" class="btn-new-chat" title="Start a fresh conversation">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          <span>+ New Chat</span>
+          <span>New Chat</span>
         </button>
+
+        <!-- Scheduled Navigation Button (Directly below New Chat) -->
+        <button id="sidebarScheduledBtn" class="btn-sidebar-scheduled" title="Scheduled tasks, reminders, and monitoring">
+          <span class="scheduled-nav-icon">⏰</span>
+          <span class="scheduled-nav-label">Scheduled</span>
+        </button>
+
+        <!-- Translation Navigation Button (Directly below Scheduled) -->
+        <button id="sidebarTranslationBtn" class="btn-sidebar-translation" title="AI Translation into any language">
+          <span class="translation-nav-icon">🌐</span>
+          <span class="translation-nav-label">Translation</span>
+        </button>
+
+        <!-- Search Conversations Bar -->
+        <div class="sidebar-search-wrap">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="text" id="chatSearchInput" class="sidebar-search-input" placeholder="Search conversations..." autocomplete="off" />
+          <button id="clearSearchBtn" class="search-clear-btn hidden" title="Clear search">✕</button>
+        </div>
       </div>
 
       <!-- Scrollable History List -->
@@ -82,10 +111,28 @@
             <!-- Rendered dynamically by script.js -->
           </div>
         </div>
+
+        <!-- Archived Chats Section -->
+        <div class="chat-section hidden" id="archivedSection" style="display: none;">
+          <div class="section-title archived-header" id="archivedToggleBtn">
+            <span class="archived-title-left">
+              <svg id="archivedChevron" class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+              <span>📂 Archived</span>
+            </span>
+            <span id="archivedCount" class="section-count">0</span>
+          </div>
+          <div id="archivedChatList" class="chat-list hidden">
+            <!-- Rendered dynamically by script.js -->
+          </div>
+        </div>
       </div>
 
       <!-- Sidebar Footer: Storage Limitation Notice -->
       <div class="sidebar-footer">
+        <button id="sidebarSettingsBtn" class="btn-sidebar-settings" title="Application & Cloud Settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <span>Settings</span>
+        </button>
         <div class="storage-notice" title="Chats are saved locally in your web browser (localStorage) and not stored on an external cloud database.">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
           <span>Saved in local browser storage</span>
@@ -93,16 +140,18 @@
       </div>
     </aside>
 
-    <!-- Main Chat Area -->
+    <!-- Main Application Area -->
     <main class="main-content">
-      <!-- Top Header Navigation -->
-      <header class="main-header">
+      <!-- View 1: Chat View -->
+      <div id="chatView" class="view-panel active">
+        <!-- Top Header Navigation -->
+        <header class="main-header">
         <div class="header-left">
           <div class="cloud-logo-header">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
           </div>
           <div class="header-info">
-            <h2 class="header-title">Cloud AI Chatbot</h2>
+            <h2 class="header-title" id="chatTitleDisplay">Cloud AI Chatbot</h2>
             <span class="header-subtitle">Powered by Gemini Flash (OpenRouter)</span>
           </div>
         </div>
@@ -130,11 +179,17 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg>
             </button>
             <div id="headerDropdownMenu" class="dropdown-menu hidden">
-              <button id="headerViewFilesBtn" class="dropdown-item">
-                <span>📎 View files in chat</span>
+              <button id="headerRenameBtn" class="dropdown-item">
+                <span>✏️ Rename chat</span>
               </button>
               <button id="headerPinBtn" class="dropdown-item">
                 <span>📌 Pin / Unpin chat</span>
+              </button>
+              <button id="headerArchiveBtn" class="dropdown-item">
+                <span>📦 Archive chat</span>
+              </button>
+              <button id="headerViewFilesBtn" class="dropdown-item">
+                <span>📎 View files in chat</span>
               </button>
               <button id="headerClearBtn" class="dropdown-item">
                 <span>🗑️ Clear conversation</span>
@@ -154,7 +209,7 @@
 
       <!-- Chat Messages Scroll Container -->
       <div id="messages" class="messages-container" aria-live="polite">
-        <!-- Welcome Screen (Matching Reference Design) -->
+        <!-- Modern Welcome Screen -->
         <div id="emptyState" class="welcome-screen">
           <div class="welcome-cloud-icon">
             <svg width="34" height="34" viewBox="0 0 24 24" fill="#2563eb"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
@@ -162,51 +217,73 @@
 
           <h1 class="welcome-title">Welcome to Cloud AI Chatbot</h1>
           <p class="welcome-desc">
-            Ask questions, upload files, or explore the power of cloud computing with AI assistance.
+            Ask anything, analyze documents, search live web data, or synthesize AI images and videos.
           </p>
 
-          <!-- 4 Interactive Example Cards (2x2 Grid) -->
+          <!-- 6 Interactive Welcome Prompt Cards -->
           <div class="cards-grid">
-            <div class="example-card" data-prompt="Explain 3-tier architecture in cloud with real-world examples.">
+            <div class="example-card" data-action="upload" data-prompt="Please analyze this uploaded document in detail.">
               <div class="card-icon-circle">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>
+                <span class="card-emoji">📄</span>
               </div>
               <div class="card-body">
-                <strong>Cloud Architecture</strong>
-                <p>Explain 3-tier architecture in cloud.</p>
+                <strong>Analyze a File</strong>
+                <p>Upload PDF, Word, or image for deep analysis.</p>
               </div>
               <div class="card-arrow">›</div>
             </div>
 
-            <div class="example-card" data-prompt="Please summarize this document and highlight the key findings.">
+            <div class="example-card" data-action="summarize" data-prompt="Please provide a concise executive summary and key findings from this document.">
               <div class="card-icon-circle">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                <span class="card-emoji">📝</span>
               </div>
               <div class="card-body">
-                <strong>Analyze Document</strong>
-                <p>Upload a PDF and ask questions.</p>
+                <strong>Summarize a Document</strong>
+                <p>Extract key takeaways & bullet points.</p>
               </div>
               <div class="card-arrow">›</div>
             </div>
 
-            <div class="example-card" data-prompt="What is the latest news and current updates on Lionel Messi and the Argentina national team?">
+            <div class="example-card" data-prompt="Explain cloud computing architecture and 3-tier microservices in simple terms with real-world analogies.">
               <div class="card-icon-circle">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                <span class="card-emoji">💡</span>
               </div>
               <div class="card-body">
-                <strong>Latest Information</strong>
-                <p>Get the latest news on any topic.</p>
+                <strong>Explain a Topic</strong>
+                <p>Understand complex concepts simply.</p>
               </div>
               <div class="card-arrow">›</div>
             </div>
 
-            <div class="example-card" data-prompt="Please inspect this image and describe all visual elements in detail.">
+            <div class="example-card" data-prompt="What are the latest updates on space exploration missions and AI in 2026?">
               <div class="card-icon-circle">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                <span class="card-emoji">🌐</span>
               </div>
               <div class="card-body">
-                <strong>Analyze Image</strong>
-                <p>Upload an image and ask about it.</p>
+                <strong>Search the Web</strong>
+                <p>Live facts grounded with web search.</p>
+              </div>
+              <div class="card-arrow">›</div>
+            </div>
+
+            <div class="example-card" data-action="image" data-prompt="Create a photorealistic futuristic smart city with neon lights and flying vehicles at night.">
+              <div class="card-icon-circle">
+                <span class="card-emoji">🖼️</span>
+              </div>
+              <div class="card-body">
+                <strong>Generate an Image</strong>
+                <p>Synthesize high-resolution AI visuals.</p>
+              </div>
+              <div class="card-arrow">›</div>
+            </div>
+
+            <div class="example-card" data-action="video" data-prompt="Create a 10-second cinematic video of a spaceship soaring through a colorful nebula.">
+              <div class="card-icon-circle">
+                <span class="card-emoji">🎬</span>
+              </div>
+              <div class="card-body">
+                <strong>Generate a Video</strong>
+                <p>Render cinematic motion scenes.</p>
               </div>
               <div class="card-arrow">›</div>
             </div>
@@ -214,7 +291,7 @@
         </div>
       </div>
 
-      <!-- Pre-Send File Attachment Preview -->
+      <!-- Pre-Send File Attachment Preview Chip with Progress -->
       <div id="filePreview" class="file-preview-card hidden">
         <div class="file-preview-left">
           <span id="filePreviewIcon" class="file-type-icon">📎</span>
@@ -223,7 +300,10 @@
             <span id="filePreviewSize" class="file-size-text">0 KB</span>
           </div>
         </div>
-        <button id="removeFileBtn" class="btn-remove-attachment" aria-label="Remove attachment" title="Remove attachment">
+        <div id="fileUploadProgressBar" class="file-progress-bar hidden">
+          <div id="fileProgressFill" class="file-progress-fill" style="width: 0%;"></div>
+        </div>
+        <button id="removeFileBtn" type="button" class="btn-remove-attachment" aria-label="Remove attachment" title="Remove attachment">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
       </div>
@@ -231,6 +311,13 @@
       <!-- Message Composer (Bottom Floating Card - ChatGPT/Claude Style) -->
       <footer class="composer-wrapper">
         <form id="composerForm" class="composer-card">
+          <!-- Active Mode Indicator Chip -->
+          <div id="activeModeChip" class="mode-chip hidden">
+            <span id="activeModeIcon">🖼️</span>
+            <span id="activeModeLabel">Image Generation Mode</span>
+            <button type="button" id="clearModeBtn" class="btn-mode-clear" title="Exit generation mode">✕</button>
+          </div>
+
           <!-- Textarea on Top -->
           <div class="composer-input-area">
             <textarea
@@ -244,15 +331,28 @@
 
           <!-- Bottom Action Toolbar -->
           <div class="composer-toolbar">
-            <!-- Left Controls: + File Attachment & Active Model Trigger -->
+            <!-- Left Controls: + Menu (File, Image, Video) & Active Model Trigger -->
             <div class="composer-toolbar-left">
-              <!-- Plus Attachment Button -->
-              <button type="button" id="attachBtn" class="btn-tool-icon btn-attach-plus" aria-label="Attach file" title="Attach PDF, TXT, DOCX, or Image (Max 10MB)">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19"></line>
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-              </button>
+              <!-- Plus Attachment & Mode Button -->
+              <div class="menu-dropdown-wrap plus-menu-wrap">
+                <button type="button" id="attachBtn" class="btn-tool-icon btn-attach-plus" aria-label="Add attachment or action" title="Add file, generate image, or generate video">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                </button>
+                <div id="plusDropdownMenu" class="dropdown-menu plus-dropdown hidden">
+                  <button type="button" id="plusUploadFileBtn" class="dropdown-item">
+                    <span>📎 Upload File</span>
+                  </button>
+                  <button type="button" id="plusGenerateImageBtn" class="dropdown-item">
+                    <span>🖼️ Generate Image</span>
+                  </button>
+                  <button type="button" id="plusGenerateVideoBtn" class="dropdown-item">
+                    <span>🎬 Generate Video</span>
+                  </button>
+                </div>
+              </div>
               <input type="file" id="fileInput" accept=".pdf,.txt,.docx,.png,.jpg,.jpeg,.webp" hidden />
 
               <!-- Active Model & Effort Selector Button -->
@@ -264,7 +364,7 @@
                   </svg>
                 </button>
 
-                <!-- Professional Cascading Popover Menu (Matching User Screenshot) -->
+                <!-- Cascading Popover Menu -->
                 <div id="modelPopoverMenu" class="model-popover hidden" role="menu">
                   <div class="popover-header">Model</div>
                   <div class="popover-list">
@@ -278,7 +378,6 @@
                         <span class="badge-fast">Fast <span class="info-icon">ⓘ</span></span>
                         <span class="flyout-arrow">›</span>
                       </div>
-                      <!-- Submenu flyout for effort -->
                       <div class="effort-flyout">
                         <div class="effort-option" data-effort="low">Low</div>
                         <div class="effort-option active" data-effort="medium">Medium</div>
@@ -296,7 +395,6 @@
                         <span class="badge-fast">Fast <span class="info-icon">ⓘ</span></span>
                         <span class="flyout-arrow">›</span>
                       </div>
-                      <!-- Submenu flyout for effort -->
                       <div class="effort-flyout">
                         <div class="effort-option" data-effort="low">Low</div>
                         <div class="effort-option active" data-effort="medium">Medium</div>
@@ -314,7 +412,6 @@
                         <span class="badge-fast">Fast <span class="info-icon">ⓘ</span></span>
                         <span class="flyout-arrow">›</span>
                       </div>
-                      <!-- Submenu flyout for effort -->
                       <div class="effort-flyout">
                         <div class="effort-option" data-effort="low">Low</div>
                         <div class="effort-option active" data-effort="medium">Medium</div>
@@ -332,7 +429,6 @@
                         <span class="badge-fast">Fast <span class="info-icon">ⓘ</span></span>
                         <span class="flyout-arrow">›</span>
                       </div>
-                      <!-- Submenu flyout for effort -->
                       <div class="effort-flyout">
                         <div class="effort-option" data-effort="low">Low</div>
                         <div class="effort-option active" data-effort="medium">Medium</div>
@@ -344,7 +440,7 @@
               </div>
             </div>
 
-            <!-- Right Controls: Microphone (Speech-to-Text) & Send Button -->
+            <!-- Right Controls: Microphone (Speech-to-Text), Stop Button & Send Button -->
             <div class="composer-toolbar-right">
               <!-- Speech-to-Text Microphone Button -->
               <button type="button" id="micBtn" class="btn-tool-icon btn-mic" aria-label="Speech to text" title="Speech to text (Click to talk)">
@@ -354,6 +450,14 @@
                   <line x1="12" y1="19" x2="12" y2="23"></line>
                   <line x1="8" y1="23" x2="16" y2="23"></line>
                 </svg>
+              </button>
+
+              <!-- Stop Generating Button -->
+              <button type="button" id="stopBtn" class="btn-stop-circle hidden" aria-label="Stop Generating" title="Stop generating (Esc)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="5" y="5" width="14" height="14" rx="2"></rect>
+                </svg>
+                <span class="stop-label">Stop</span>
               </button>
 
               <!-- Send Button -->
@@ -367,14 +471,500 @@
           </div>
         </form>
       </footer>
-    </main>
+    </div> <!-- /chatView -->
+
+    <!-- View 2: Scheduled Tasks View -->
+    <div id="scheduledView" class="view-panel hidden">
+      <!-- Scheduled Top Header -->
+      <header class="scheduled-header">
+        <div class="scheduled-header-left">
+          <div class="scheduled-badge-row">
+            <span class="scheduled-header-icon">⏰</span>
+            <h2 class="scheduled-title">Scheduled</h2>
+          </div>
+          <p class="scheduled-subtitle">Create reminders, recurring AI tasks, and monitoring tasks.</p>
+        </div>
+        <div class="scheduled-header-right">
+          <!-- Status Filter Dropdown [ Active ▼ ] -->
+          <div class="filter-dropdown-wrap">
+            <button type="button" id="taskFilterBtn" class="btn-filter-dropdown" title="Filter tasks by status">
+              <span id="currentFilterLabel">Active</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div id="taskFilterMenu" class="filter-dropdown-menu hidden">
+              <button type="button" class="filter-option" data-filter="all">All</button>
+              <button type="button" class="filter-option selected" data-filter="active">Active</button>
+              <button type="button" class="filter-option" data-filter="paused">Paused</button>
+              <button type="button" class="filter-option" data-filter="completed">Completed</button>
+              <button type="button" class="filter-option" data-filter="failed">Failed</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Scrollable Scheduled View Body -->
+      <div class="scheduled-scroll-wrap">
+        <div class="scheduled-inner-container">
+
+          <!-- 1. Natural Language Scheduling Input Bar -->
+          <div class="nl-schedule-box">
+            <div class="nl-input-bar">
+              <button type="button" id="schedulePlusBtn" class="btn-schedule-plus" title="Create a task manually">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              </button>
+              <textarea id="scheduleInput" class="schedule-input-field" rows="1" placeholder="Schedule a task (e.g. Every Monday at 9 AM, give me a summary of AI news)..."></textarea>
+              <div class="nl-actions-right">
+                <button type="button" id="scheduleMicBtn" class="btn-schedule-mic" title="Voice input (Speech to text)">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                </button>
+                <button type="button" id="scheduleSubmitBtn" class="btn-schedule-submit" title="Parse and schedule task (Enter)">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="19" x2="12" y2="5"></line>
+                    <polyline points="5 12 12 5 19 12"></polyline>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="nl-hint">Type in natural language like <em>"Remind me to study every day at 7 PM"</em> or click <strong>+</strong> to customize.</div>
+          </div>
+
+          <!-- 2. Recommended Tasks Accordion -->
+          <div class="recommended-container">
+            <button type="button" id="recommendedToggleBtn" class="recommended-toggle-row">
+              <span class="rec-toggle-label">Recommended</span>
+              <svg id="recommendedChevron" class="rec-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div id="recommendedCardsGrid" class="recommended-cards-grid">
+              <!-- Card 1: Email Monitor -->
+              <div class="rec-task-card" data-title="Email & Updates Monitor" data-type="web_monitor" data-prompt="Check for important updates, messages, and deadlines, and let me know what needs my immediate attention." data-rec="daily" data-time="09:00">
+                <div class="rec-card-top">
+                  <span class="rec-card-icon">📧</span>
+                  <button type="button" class="btn-rec-add" title="Schedule this task">+</button>
+                </div>
+                <h4 class="rec-card-title">Email Monitor</h4>
+                <p class="rec-card-desc">Check for important updates and let me know what needs my attention</p>
+              </div>
+
+              <!-- Card 2: Daily AI Briefing -->
+              <div class="rec-task-card" data-title="Daily AI Briefing" data-type="briefing" data-prompt="Every morning, give me the most important technology and AI news, key research breakthroughs, and market updates." data-rec="daily" data-time="08:00">
+                <div class="rec-card-top">
+                  <span class="rec-card-icon">📰</span>
+                  <button type="button" class="btn-rec-add" title="Schedule this task">+</button>
+                </div>
+                <h4 class="rec-card-title">Daily AI Briefing</h4>
+                <p class="rec-card-desc">Every morning, give me the most important technology and AI news</p>
+              </div>
+
+              <!-- Card 3: Study Reminder -->
+              <div class="rec-task-card" data-title="Daily Study Reminder" data-type="study" data-prompt="Remind me to study every evening and provide 3 quick technical review questions to test my understanding." data-rec="daily" data-time="19:00">
+                <div class="rec-card-top">
+                  <span class="rec-card-icon">📚</span>
+                  <button type="button" class="btn-rec-add" title="Schedule this task">+</button>
+                </div>
+                <h4 class="rec-card-title">Study Reminder</h4>
+                <p class="rec-card-desc">Remind me to study every evening</p>
+              </div>
+
+              <!-- Card 4: Website Monitor -->
+              <div class="rec-task-card" data-title="Website Status & Changes Monitor" data-type="website_monitor" data-prompt="Check target website and tell me when important changes, new posts, or status alerts happen." data-rec="daily" data-time="10:00">
+                <div class="rec-card-top">
+                  <span class="rec-card-icon">🌐</span>
+                  <button type="button" class="btn-rec-add" title="Schedule this task">+</button>
+                </div>
+                <h4 class="rec-card-title">Website Monitor</h4>
+                <p class="rec-card-desc">Check a website and tell me when important changes happen</p>
+              </div>
+
+              <!-- Card 5: Price Monitor -->
+              <div class="rec-task-card" data-title="Product Price Alert Monitor" data-type="price_monitor" data-prompt="Watch product listings and let me know when price changes, discounts, or special deals occur." data-rec="daily" data-time="12:00">
+                <div class="rec-card-top">
+                  <span class="rec-card-icon">💰</span>
+                  <button type="button" class="btn-rec-add" title="Schedule this task">+</button>
+                </div>
+                <h4 class="rec-card-title">Price Monitor</h4>
+                <p class="rec-card-desc">Watch a product and let me know when its price changes</p>
+              </div>
+
+              <!-- Card 6: Weekly AI Report -->
+              <div class="rec-task-card" data-title="Weekly Progress & AI Report" data-type="report" data-prompt="Every Friday, generate a structured summary of my week's activity, accomplishments, and focus areas for next week." data-rec="weekly" data-days="Friday" data-time="17:00">
+                <div class="rec-card-top">
+                  <span class="rec-card-icon">📊</span>
+                  <button type="button" class="btn-rec-add" title="Schedule this task">+</button>
+                </div>
+                <h4 class="rec-card-title">Weekly AI Report</h4>
+                <p class="rec-card-desc">Every Friday, generate a summary of my week's activity</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. Your Scheduled Tasks List Section -->
+          <div class="scheduled-list-section">
+            <div class="scheduled-list-header">
+              <h3 class="scheduled-list-title">Your Scheduled Tasks</h3>
+              <span id="tasksCountBadge" class="scheduled-count-badge">0</span>
+            </div>
+
+            <!-- Empty State -->
+            <div id="scheduledEmptyState" class="scheduled-empty-state">
+              <div class="empty-clock-icon">⏰</div>
+              <h4>No scheduled tasks yet.</h4>
+              <p>Create a task to automatically receive AI-generated results at a scheduled time.</p>
+              <button type="button" id="emptyCreateTaskBtn" class="btn-create-task-pill">+ Create Task</button>
+            </div>
+
+            <!-- Tasks Grid -->
+            <div id="scheduledTasksGrid" class="scheduled-tasks-grid">
+              <!-- Rendered dynamically by script.js -->
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div> <!-- /scheduledView -->
+
+    <!-- View 3: Translation View -->
+    <div id="translationView" class="view-panel hidden">
+      <!-- Translation Top Header -->
+      <header class="translation-header">
+        <div class="translation-header-left">
+          <div class="translation-badge-row">
+            <span class="translation-header-icon">🌐</span>
+            <h2 class="translation-title">Translation</h2>
+          </div>
+          <p class="translation-subtitle">Translate text into any language you need.</p>
+        </div>
+        <div class="translation-header-right">
+          <!-- Translation Modes Selector -->
+          <div class="translation-modes-bar" role="radiogroup" aria-label="Translation Tone / Mode">
+            <button type="button" class="btn-mode-pill active" data-mode="natural" title="Natural, idiomatic translation that reads smoothly">Natural</button>
+            <button type="button" class="btn-mode-pill" data-mode="formal" title="Professional and polite language for business/official use">Formal</button>
+            <button type="button" class="btn-mode-pill" data-mode="casual" title="Conversational and friendly language">Casual</button>
+            <button type="button" class="btn-mode-pill" data-mode="literal" title="Direct translation preserving original syntax closer">Literal</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Scrollable Translation View Body -->
+      <div class="translation-scroll-wrap">
+        <div class="translation-inner-container">
+
+          <!-- Translation Workspace Two-Panel Card -->
+          <div class="translation-workspace-card">
+
+            <!-- Left: Source Panel -->
+            <div class="trans-panel trans-source-panel">
+              <div class="trans-panel-header">
+                <!-- Source Language Dropdown Selector -->
+                <div class="lang-select-wrap" id="sourceLangWrap">
+                  <button type="button" id="sourceLangBtn" class="btn-lang-dropdown" title="Select source language">
+                    <span id="sourceLangLabel">Auto Detect</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
+                  <div id="sourceLangMenu" class="lang-dropdown-menu hidden">
+                    <div class="lang-search-box">
+                      <input type="text" id="sourceLangSearchInput" class="lang-search-input" placeholder="Search language... 🔍" autocomplete="off" />
+                    </div>
+                    <div id="sourceLangList" class="lang-options-list">
+                      <!-- Rendered dynamically by script.js -->
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Document info badge if document loaded -->
+                <div id="sourceDocBadge" class="source-doc-badge hidden">
+                  <span class="doc-icon">📄</span>
+                  <span id="sourceDocName" class="doc-name">document.pdf</span>
+                  <button type="button" id="removeSourceDocBtn" class="btn-remove-doc" title="Remove document">✕</button>
+                </div>
+              </div>
+
+              <!-- Source Textarea -->
+              <div class="trans-textarea-wrap">
+                <textarea id="sourceText" class="trans-textarea" placeholder="Enter text to translate..." rows="8"></textarea>
+              </div>
+
+              <!-- Source Footer Toolbar -->
+              <div class="trans-panel-footer">
+                <div class="trans-tools-left">
+                  <button type="button" id="translateMicBtn" class="btn-trans-tool" title="Voice input (Speech to text)">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                    <span>Speak</span>
+                  </button>
+
+                  <button type="button" id="translateDocBtn" class="btn-trans-tool" title="Upload document (PDF, DOCX, TXT)">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+                    <span>Document</span>
+                  </button>
+                  <input type="file" id="translateDocInput" class="hidden" accept=".pdf,.docx,.txt" style="display:none;" />
+
+                  <button type="button" id="clearTranslationBtn" class="btn-trans-tool" title="Clear text">
+                    <span>✕ Clear</span>
+                  </button>
+                </div>
+
+                <div class="trans-char-count">
+                  <span id="sourceCharCount">0</span> chars
+                </div>
+              </div>
+            </div>
+
+            <!-- Central Language Swap Action -->
+            <div class="trans-swap-col">
+              <button type="button" id="swapLangBtn" class="btn-swap-lang" title="Swap languages and text (English ⇄ Target)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 5h18"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 19H3"></path></svg>
+              </button>
+            </div>
+
+            <!-- Right: Target Panel -->
+            <div class="trans-panel trans-target-panel">
+              <div class="trans-panel-header">
+                <!-- Target Language Dropdown Selector -->
+                <div class="lang-select-wrap" id="targetLangWrap">
+                  <button type="button" id="targetLangBtn" class="btn-lang-dropdown" title="Select target language">
+                    <span id="targetLangLabel">Tamil</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
+                  <div id="targetLangMenu" class="lang-dropdown-menu hidden">
+                    <div class="lang-search-box">
+                      <input type="text" id="targetLangSearchInput" class="lang-search-input" placeholder="Search language... 🔍" autocomplete="off" />
+                    </div>
+                    <div id="targetLangList" class="lang-options-list">
+                      <!-- Rendered dynamically by script.js -->
+                    </div>
+                  </div>
+                </div>
+
+                <div id="targetStatusBadge" class="target-status-badge hidden">
+                  <span class="typing-dots-mini"><span></span><span></span><span></span></span>
+                  <span>Translating...</span>
+                </div>
+              </div>
+
+              <!-- Target Output Box -->
+              <div class="trans-textarea-wrap target-output-wrap">
+                <div id="targetText" class="trans-output-field" data-placeholder="Translation appears here..."></div>
+              </div>
+
+              <!-- Target Footer Toolbar -->
+              <div class="trans-panel-footer">
+                <div class="trans-tools-left">
+                  <button type="button" id="copyTranslationBtn" class="btn-trans-tool" title="Copy translated text">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    <span>Copy</span>
+                  </button>
+
+                  <button type="button" id="readTranslationBtn" class="btn-trans-tool" title="Read aloud translated text">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                    <span>Read Aloud</span>
+                  </button>
+
+                  <button type="button" id="useInChatBtn" class="btn-trans-tool btn-use-chat" title="Transfer into chatbot composer and switch to Chat view">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                    <span>↗ Use in Chat</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Prominent Translate Action Button Bar -->
+          <div class="translate-action-bar">
+            <button type="button" id="submitTranslateBtn" class="btn-submit-translate">
+              <span>Translate</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            </button>
+          </div>
+
+          <!-- Recent Translations Section -->
+          <div class="recent-translations-section">
+            <div class="recent-trans-header">
+              <h3 class="recent-trans-title">Recent Translations</h3>
+              <button type="button" id="clearHistoryBtn" class="btn-clear-history" title="Clear translation history">Clear History</button>
+            </div>
+            <div id="recentTranslationsList" class="recent-trans-list">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div> <!-- /translationView -->
+
+  </main>
 
   </div>
 
   <!-- Action Toast Notification -->
   <div id="toastNotification" class="toast hidden"></div>
 
-  <!-- Chat Context Dropdown Menu (Created dynamically in JS) -->
+  <!-- Task Confirmation & Configuration Modal -->
+  <div id="taskConfirmModal" class="modal-overlay hidden" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-icon">⏰</span>
+          <h3 id="confirmModalTitle">Create Scheduled Task</h3>
+        </div>
+        <button type="button" id="closeConfirmModalBtn" class="btn-modal-close" title="Close">✕</button>
+      </div>
+
+      <form id="taskConfigForm" class="modal-body-form">
+        <input type="hidden" id="modalTaskId" value="" />
+
+        <!-- Task Title -->
+        <div class="form-group">
+          <label for="modalTaskTitle">Task Title</label>
+          <input type="text" id="modalTaskTitle" class="form-input" placeholder="e.g. Daily AI Briefing" required />
+        </div>
+
+        <!-- Prompt -->
+        <div class="form-group">
+          <label for="modalTaskPrompt">Prompt / Instruction</label>
+          <textarea id="modalTaskPrompt" class="form-textarea" rows="3" placeholder="What should the AI assistant do when triggered?" required></textarea>
+        </div>
+
+        <!-- Category & Recurrence Row -->
+        <div class="form-row-2">
+          <div class="form-group">
+            <label for="modalTaskType">Task Type</label>
+            <select id="modalTaskType" class="form-select">
+              <option value="reminder">⏰ Reminder</option>
+              <option value="briefing">📰 AI Briefing</option>
+              <option value="web_monitor">🔎 Web Monitor</option>
+              <option value="report">📊 Report</option>
+              <option value="study">📚 Study Reminder</option>
+              <option value="price_monitor">💰 Price Monitor</option>
+              <option value="website_monitor">🌐 Website Monitor</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="modalTaskRecurrence">Schedule</label>
+            <select id="modalTaskRecurrence" class="form-select">
+              <option value="daily">Every day</option>
+              <option value="once">Once</option>
+              <option value="weekly">Weekly</option>
+              <option value="weekdays">Weekdays (Mon-Fri)</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Time & Timezone Row -->
+        <div class="form-row-2">
+          <div class="form-group">
+            <label for="modalTaskTime">Time</label>
+            <input type="time" id="modalTaskTime" class="form-input" value="08:00" required />
+          </div>
+
+          <div class="form-group">
+            <label for="modalTaskTimezone">Timezone</label>
+            <input type="text" id="modalTaskTimezone" class="form-input" readonly />
+          </div>
+        </div>
+
+        <!-- Specific Date (visible only for 'once') -->
+        <div id="modalDateGroup" class="form-group hidden">
+          <label for="modalTaskDate">Date</label>
+          <input type="date" id="modalTaskDate" class="form-input" />
+        </div>
+
+        <!-- Days of Week (visible for 'weekly' and 'custom') -->
+        <div id="modalDaysGroup" class="form-group hidden">
+          <label>Days of Week</label>
+          <div class="days-selector-wrap">
+            <button type="button" class="btn-day-toggle" data-day="Monday">Mon</button>
+            <button type="button" class="btn-day-toggle" data-day="Tuesday">Tue</button>
+            <button type="button" class="btn-day-toggle" data-day="Wednesday">Wed</button>
+            <button type="button" class="btn-day-toggle" data-day="Thursday">Thu</button>
+            <button type="button" class="btn-day-toggle" data-day="Friday">Fri</button>
+            <button type="button" class="btn-day-toggle" data-day="Saturday">Sat</button>
+            <button type="button" class="btn-day-toggle" data-day="Sunday">Sun</button>
+          </div>
+        </div>
+
+        <!-- Modal Footer Actions -->
+        <div class="modal-footer">
+          <button type="button" id="modalCancelBtn" class="btn-modal-secondary">Cancel</button>
+          <button type="submit" id="modalSaveTaskBtn" class="btn-modal-primary">Create Task</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Task Execution History Modal -->
+  <div id="taskHistoryModal" class="modal-overlay hidden" style="display: none;">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span id="historyModalIcon" class="modal-icon">📰</span>
+          <div>
+            <h3 id="historyModalTitle">Daily AI Briefing</h3>
+            <span id="historyModalSchedule" class="modal-subtitle">Every day at 8:00 AM</span>
+          </div>
+        </div>
+        <button type="button" id="closeHistoryModalBtn" class="btn-modal-close" title="Close">✕</button>
+      </div>
+
+      <div class="history-modal-body">
+        <div class="history-actions-bar">
+          <span class="history-section-heading">Execution History</span>
+          <button type="button" id="historyRunNowBtn" class="btn-history-run-now" title="Execute this task right now">
+            ▶ Run Now
+          </button>
+        </div>
+        <div id="historyEntriesList" class="history-entries-list">
+          <!-- Rendered dynamically by script.js -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Application & Cloud Settings Modal -->
+  <div id="taskSettingsModal" class="modal-overlay hidden" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-icon">⚙</span>
+          <h3>Application & Cloud Settings</h3>
+        </div>
+        <button type="button" id="closeSettingsModalBtn" class="btn-modal-close" title="Close">✕</button>
+      </div>
+      <div class="settings-modal-body">
+        <div class="settings-item">
+          <div class="settings-item-label">AI Model</div>
+          <div class="settings-item-value" id="settingsModelVal">Google Gemini 3.7 Flash</div>
+        </div>
+        <div class="settings-item">
+          <div class="settings-item-label">Local Background Scheduler</div>
+          <div class="settings-item-value"><span class="status-pill-mini active">🟢 Active</span> (Polls every 30s)</div>
+        </div>
+        <div class="settings-item">
+          <div class="settings-item-label">Azure Cloud Trigger Webhook</div>
+          <div class="settings-item-value"><code>POST /api/tasks/tick</code></div>
+        </div>
+        <div class="settings-item">
+          <div class="settings-item-label">Scheduled Storage</div>
+          <div class="settings-item-value"><code>data/scheduled_tasks.json</code> (Session-Isolated)</div>
+        </div>
+        <div class="settings-note">
+          <strong>Azure Note:</strong> For continuous 24/7 background execution on Azure App Service Free (F1), configure an external Azure Logic App or Timer Function to ping <code>/api/tasks/tick</code>.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Task Item Three-Dot Context Menu -->
+  <div id="taskItemContextMenu" class="context-menu hidden">
+    <button id="ctxTaskRunNow" class="context-item">▶ Run Now</button>
+    <button id="ctxTaskHistory" class="context-item">📜 View Details & History</button>
+    <button id="ctxTaskEdit" class="context-item">✏️ Edit</button>
+    <button id="ctxTaskPauseResume" class="context-item">⏸ Pause</button>
+    <button id="ctxTaskDelete" class="context-item danger">🗑️ Delete task</button>
+  </div>
+
+  <!-- Chat Context Dropdown Menu -->
   <div id="chatItemContextMenu" class="context-menu hidden">
     <button id="ctxPinBtn" class="context-item">📌 Pin to top</button>
     <button id="ctxRenameBtn" class="context-item">✏️ Rename</button>
@@ -382,6 +972,6 @@
     <button id="ctxDeleteBtn" class="context-item danger">🗑️ Delete chat</button>
   </div>
 
-  <script src="{{ url_for('static', filename='js/script.js') }}?v=15.0"></script>
+  <script src="{{ url_for('static', filename='js/script.js') }}?v=20.0"></script>
 </body>
 </html>

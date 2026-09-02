@@ -10,9 +10,12 @@ venv/
 env/
 *.egg-info/
 
-# Uploaded files (user content should not be committed)
+# Uploaded and generated files (user content should not be committed)
 uploads/*
 !uploads/.gitkeep
+static/generated/images/*
+static/generated/videos/*
+!static/generated/videos/sample_city.mp4
 
 # OS / editor
 .DS_Store

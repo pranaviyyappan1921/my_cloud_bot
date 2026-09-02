@@ -14,7 +14,7 @@ Features:
 import os
 import base64
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, cast
 
 import openai
 from openai import OpenAI, OpenAIError, APIError, RateLimitError, AuthenticationError, APIConnectionError, NotFoundError, APIStatusError
@@ -25,21 +25,21 @@ logger = logging.getLogger("chatbot.client")
 DEFAULT_MODEL = "google/gemini-3.7-flash"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-SYSTEM_INSTRUCTION = """You are a helpful, knowledgeable, and friendly AI assistant for a college High Performance Cloud Computing project titled "Cloud-Based AI Chatbot with File Analysis Using Gemini and Microsoft Azure".
+SYSTEM_INSTRUCTION = """You are a modern, helpful, smart, and friendly AI assistant.
 
 Interaction Rules:
-1. Natural Greetings & Conversational Politeness:
-   - For simple greetings (such as "Hello", "Hi", "Hey", "Good morning", "Good afternoon", "Good evening", "How are you?"), respond warmly and naturally as a friendly conversational partner (e.g. "Hello! 👋 How can I help you today?").
-   - Do NOT provide dictionary definitions or web search overviews of greeting words.
-2. Technical & General Question Answering:
-   - For genuine questions (such as "What is cloud computing?", "Explain IaaS vs PaaS vs SaaS"), provide thorough, clear, and well-structured answers using clean Markdown (bold text, bullet points, code blocks).
-3. Current Events & Live Information:
-   - When asked about recent news, current sports status (e.g. "Is Messi retired from the Argentina national team?"), politics, tech updates, or any time-sensitive topic, provide accurate, up-to-date information with relevant dates and context.
-4. Attached Document & Multimodal Image Analysis:
+1. Natural Greetings:
+   - For simple greetings (such as "hello", "hi", "hey", "good morning", "how are you"), respond ONLY with a short, warm, and natural greeting (e.g., "Hello! 👋 How can I help you today?").
+   - NEVER introduce yourself with long project titles, college project descriptions, or unsolicited disclaimers. Keep greetings strictly to 1 or 2 concise sentences.
+2. Direct Answers:
+   - Answer the user's specific request directly and concisely without conversational filler.
+3. Technical & General Knowledge:
+   - Provide clear, well-structured explanations using clean Markdown (bold text, bullet points, syntax-highlighted code blocks).
+4. Current Events & Live Information:
+   - For recent facts, news, sports, politics, or time-sensitive events, provide accurate, up-to-date information.
+5. Attached Document & Multimodal Analysis:
    - When a document is attached under [ATTACHED DOCUMENT], answer directly based on the uploaded content.
    - When an image is attached, inspect the image and describe or answer questions about its visual elements.
-   - If the user attaches a file with no specific prompt, provide a concise and structured summary of the file.
-   - If the required answer is not present in the attached file, state that clearly and politely without hallucinating.
 """
 
 
@@ -99,7 +99,7 @@ class GeminiClient:
 
         return self._client
 
-    def generate_reply(
+    def _prepare_request(
         self,
         message: str,
         history: Optional[List[Dict[str, str]]] = None,
@@ -108,15 +108,10 @@ class GeminiClient:
         image_mime: Optional[str] = None,
         model: Optional[str] = None,
         effort: Optional[str] = "medium",
-    ) -> str:
-        """
-        Generates an AI response given a user message, optional conversation history,
-        optional document context, optional image bytes, optional model override,
-        and optional reasoning effort ("low", "medium", "high").
-
-        Returns:
-            str: AI response text in Markdown format.
-        """
+        max_tokens_override: Optional[int] = None,
+        use_web_search_override: Optional[bool] = None,
+    ):
+        """Prepares client, messages, parameters, and tokens for OpenAI-compatible request."""
         client = self._get_client()
 
         # Build OpenAI chat completion messages array
@@ -196,25 +191,67 @@ class GeminiClient:
         extra_body["reasoning"] = {"effort": effort_level}
         
         # SMART WEB SEARCH: Only enable web search plugin for text queries when NO document or image is attached.
-        # This prevents credit budget exhaustion on uploaded files.
-        use_web_search = self.enable_web_search and not file_text_context and not image_bytes
+        if use_web_search_override is not None:
+            use_web_search = use_web_search_override
+        else:
+            use_web_search = self.enable_web_search and not file_text_context and not image_bytes
+
         if use_web_search:
             extra_body["plugins"] = [{"id": "web"}]
 
-        # Budget-friendly token cap tailored to effort level:
-        # Low effort: 500, Medium: 700, High: 850
-        base_tokens = {"low": 500, "medium": 700, "high": 850}.get(effort_level, 700)
-        max_tokens = min(base_tokens, 700) if (file_text_context or image_bytes) else base_tokens
+        # Token cap tailored to effort level or override
+        if max_tokens_override:
+            max_tokens = max_tokens_override
+        else:
+            base_tokens = {"low": 500, "medium": 700, "high": 850}.get(effort_level, 700)
+            max_tokens = min(base_tokens, 700) if (file_text_context or image_bytes) else base_tokens
+
+        return client, model_to_use, messages, extra_body, max_tokens, effort_level, use_web_search
+
+    def generate_reply(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        file_text_context: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
+        image_mime: Optional[str] = None,
+        model: Optional[str] = None,
+        effort: Optional[str] = "medium",
+        max_tokens_override: Optional[int] = None,
+        use_web_search_override: Optional[bool] = None,
+    ) -> str:
+        """
+        Generates an AI response given a user message, optional conversation history,
+        optional document context, optional image bytes, optional model override,
+        and optional reasoning effort ("low", "medium", "high").
+
+        Returns:
+            str: AI response text in Markdown format.
+        """
+        client, model_to_use, messages, extra_body, max_tokens, effort_level, use_web_search = self._prepare_request(
+            message=message,
+            history=history,
+            file_text_context=file_text_context,
+            image_bytes=image_bytes,
+            image_mime=image_mime,
+            model=model,
+            effort=effort,
+            max_tokens_override=max_tokens_override,
+            use_web_search_override=use_web_search_override,
+        )
 
         try:
             logger.info("Sending request to OpenRouter (model: %s, effort: %s, web_search: %s, max_tokens: %d)", model_to_use, effort_level, use_web_search, max_tokens)
             
-            response = client.chat.completions.create(
-                model=model_to_use,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=max_tokens,
-                extra_body=extra_body if extra_body else None,
+            response = cast(
+                Any,
+                client.chat.completions.create(
+                    model=model_to_use,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=max_tokens,
+                    extra_body=extra_body if extra_body else None,
+                )
             )
 
             if not response or not response.choices:
@@ -271,17 +308,20 @@ class GeminiClient:
                 afford_match = re.search(r"can only afford (\d+)", str(e))
                 if afford_match:
                     affordable = int(afford_match.group(1))
-                    reduced_tokens = max(40, affordable - 10)
+                    reduced_tokens = max(10, affordable - 1)
                 else:
-                    reduced_tokens = 200
+                    reduced_tokens = 50
                 
                 try:
-                    logger.info("Retrying with reduced max_tokens=%d without web plugin...", reduced_tokens)
-                    retry_resp = client.chat.completions.create(
-                        model=model_to_use,
-                        messages=messages,
-                        temperature=0.7,
-                        max_tokens=reduced_tokens,
+                    logger.info("Retrying with affordable max_tokens=%d without web plugin...", reduced_tokens)
+                    retry_resp = cast(
+                        Any,
+                        client.chat.completions.create(
+                            model=model_to_use,
+                            messages=messages,
+                            temperature=0.7,
+                            max_tokens=reduced_tokens,
+                        )
                     )
                     if retry_resp and retry_resp.choices and retry_resp.choices[0].message.content:
                         return retry_resp.choices[0].message.content.strip()
@@ -290,14 +330,25 @@ class GeminiClient:
 
                 # 2. Fallback to free OpenRouter models if credits are completely exhausted
                 if not (image_bytes and image_mime):
-                    for fallback_model in ["liquid/lfm-2.5-2.6b:free", "inclusionai/ling-3.0-flash-fin:free", "nvidia/nemotron-3.5-lightning:free"]:
+                    free_models = [
+                        "meta-llama/llama-3.2-3b-instruct:free",
+                        "google/gemini-2.0-flash-exp:free",
+                        "mistralai/mistral-7b-instruct:free",
+                        "liquid/lfm-2.5-2.6b:free",
+                        "inclusionai/ling-3.0-flash-fin:free",
+                        "nvidia/nemotron-3.5-lightning:free",
+                    ]
+                    for fallback_model in free_models:
                         try:
                             logger.info("Attempting free fallback model: %s", fallback_model)
-                            fb_resp = client.chat.completions.create(
-                                model=fallback_model,
-                                messages=messages,
-                                temperature=0.7,
-                                max_tokens=500,
+                            fb_resp = cast(
+                                Any,
+                                client.chat.completions.create(
+                                    model=fallback_model,
+                                    messages=messages,
+                                    temperature=0.7,
+                                    max_tokens=350,
+                                )
                             )
                             if fb_resp and fb_resp.choices and fb_resp.choices[0].message.content:
                                 return fb_resp.choices[0].message.content.strip()
@@ -324,3 +375,89 @@ class GeminiClient:
                 f"Unexpected error communicating with AI: {str(e)}",
                 status_code=500,
             ) from e
+
+    def generate_reply_stream(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        file_text_context: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
+        image_mime: Optional[str] = None,
+        model: Optional[str] = None,
+        effort: Optional[str] = "medium",
+    ):
+        """
+        Streams AI response chunks in real-time.
+        Yields:
+            str: incremental response delta text chunks.
+        """
+        client, model_to_use, messages, extra_body, max_tokens, effort_level, use_web_search = self._prepare_request(
+            message=message,
+            history=history,
+            file_text_context=file_text_context,
+            image_bytes=image_bytes,
+            image_mime=image_mime,
+            model=model,
+            effort=effort,
+        )
+
+        try:
+            logger.info(
+                "Sending streaming request to OpenRouter (model: %s, effort: %s, web_search: %s, max_tokens: %d)",
+                model_to_use, effort_level, use_web_search, max_tokens
+            )
+            stream_response = cast(
+                Any,
+                client.chat.completions.create(
+                    model=model_to_use,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=max_tokens,
+                    extra_body=extra_body if extra_body else None,
+                    stream=True,
+                )
+            )
+
+            has_yielded = False
+            for chunk in stream_response:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    content = getattr(delta, "content", None) or ""
+                    if not content and hasattr(delta, "reasoning"):
+                        content = getattr(delta, "reasoning", "") or ""
+                    if content:
+                        has_yielded = True
+                        yield content
+
+            if not has_yielded:
+                # If stream returned no content, try single call fallback
+                reply = self.generate_reply(
+                    message=message,
+                    history=history,
+                    file_text_context=file_text_context,
+                    image_bytes=image_bytes,
+                    image_mime=image_mime,
+                    model=model,
+                    effort=effort,
+                )
+                yield reply
+
+        except GeminiClientError:
+            raise
+        except Exception as e:
+            logger.warning("Streaming encountered an issue: %s. Trying direct reply fallback...", e)
+            try:
+                reply = self.generate_reply(
+                    message=message,
+                    history=history,
+                    file_text_context=file_text_context,
+                    image_bytes=image_bytes,
+                    image_mime=image_mime,
+                    model=model,
+                    effort=effort,
+                )
+                yield reply
+            except Exception as fb_err:
+                if isinstance(fb_err, GeminiClientError):
+                    raise fb_err
+                raise GeminiClientError(f"Streaming error: {str(e)}", status_code=500) from fb_err

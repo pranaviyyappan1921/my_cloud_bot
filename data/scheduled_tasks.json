@@ -1,0 +1,29 @@
+{
+  "task_657852f93f": {
+    "id": "task_657852f93f",
+    "session_id": "test_session_run_now",
+    "title": "Run Now Quick Reminder",
+    "prompt": "Respond with 'Task executed successfully.'",
+    "task_type": "reminder",
+    "recurrence": "once",
+    "time": "10:00",
+    "days_of_week": [],
+    "specific_date": null,
+    "timezone": "UTC",
+    "next_run": "2026-09-03T10:00:00Z",
+    "status": "completed",
+    "created_at": 1788354607,
+    "updated_at": 1788354613,
+    "created_at_iso": "2026-09-02T13:10:07.910321Z",
+    "execution_history": [
+      {
+        "id": "run_ed652ac6",
+        "executed_at": "2026-09-02T13:10:13.495882Z",
+        "status": "failed",
+        "duration_seconds": 5.58,
+        "result": "Execution error: OpenRouter credit budget limit reached (402). Your account balance is low. Please wait a moment for in-flight requests to settle, or top up credits at openrouter.ai/settings/credits.",
+        "error": "OpenRouter credit budget limit reached (402). Your account balance is low. Please wait a moment for in-flight requests to settle, or top up credits at openrouter.ai/settings/credits."
+      }
+    ]
+  }
+}
