@@ -1,0 +1,326 @@
+"""
+OpenRouter / Gemini API client for the Cloud-Based AI Chatbot.
+High Performance Cloud Computing Project.
+
+Features:
+- OpenAI-compatible Python SDK connected to OpenRouter API (https://openrouter.ai/api/v1)
+- Currently supported Google Gemini Flash model: google/gemini-2.5-flash
+- Smart Web search grounding for live facts when no document is attached (avoids 402 in-flight budget exhaustion)
+- Multimodal image question-answering via base64 data URLs
+- Document text context integration for PDF, TXT, and DOCX files
+- Defensive error handling: 401 Auth, 402 Budget, 429 Rate Limits, 404 Model, Network errors
+"""
+
+import os
+import base64
+import logging
+from typing import List, Dict, Optional
+
+import openai
+from openai import OpenAI, OpenAIError, APIError, RateLimitError, AuthenticationError, APIConnectionError, NotFoundError, APIStatusError
+
+logger = logging.getLogger("chatbot.client")
+
+# Active verified OpenRouter model for Gemini Flash.
+DEFAULT_MODEL = "google/gemini-3.7-flash"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+SYSTEM_INSTRUCTION = """You are a helpful, knowledgeable, and friendly AI assistant for a college High Performance Cloud Computing project titled "Cloud-Based AI Chatbot with File Analysis Using Gemini and Microsoft Azure".
+
+Interaction Rules:
+1. Natural Greetings & Conversational Politeness:
+   - For simple greetings (such as "Hello", "Hi", "Hey", "Good morning", "Good afternoon", "Good evening", "How are you?"), respond warmly and naturally as a friendly conversational partner (e.g. "Hello! 👋 How can I help you today?").
+   - Do NOT provide dictionary definitions or web search overviews of greeting words.
+2. Technical & General Question Answering:
+   - For genuine questions (such as "What is cloud computing?", "Explain IaaS vs PaaS vs SaaS"), provide thorough, clear, and well-structured answers using clean Markdown (bold text, bullet points, code blocks).
+3. Current Events & Live Information:
+   - When asked about recent news, current sports status (e.g. "Is Messi retired from the Argentina national team?"), politics, tech updates, or any time-sensitive topic, provide accurate, up-to-date information with relevant dates and context.
+4. Attached Document & Multimodal Image Analysis:
+   - When a document is attached under [ATTACHED DOCUMENT], answer directly based on the uploaded content.
+   - When an image is attached, inspect the image and describe or answer questions about its visual elements.
+   - If the user attaches a file with no specific prompt, provide a concise and structured summary of the file.
+   - If the required answer is not present in the attached file, state that clearly and politely without hallucinating.
+"""
+
+
+class GeminiClientError(Exception):
+    """Custom exception raised when the AI client encounters an issue."""
+    def __init__(self, message: str, status_code: int = 500):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+class GeminiClient:
+    """
+    Client for interacting with Google Gemini models hosted on OpenRouter
+    using the official OpenAI-compatible Python SDK.
+    """
+
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
+        self.model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+        self.enable_web_search = os.getenv("ENABLE_WEB_SEARCH", "true").lower() in ("true", "1", "yes")
+
+        self._client: Optional[OpenAI] = None
+        if self.api_key and not self.api_key.startswith("your_"):
+            try:
+                self._client = OpenAI(
+                    base_url=OPENROUTER_BASE_URL,
+                    api_key=self.api_key,
+                    default_headers={
+                        "HTTP-Referer": "https://github.com/cloud-ai-chatbot",
+                        "X-Title": "Cloud-Based AI Chatbot Mini Project",
+                    },
+                )
+            except Exception as e:
+                logger.error("Failed to initialize OpenAI client for OpenRouter: %s", type(e).__name__)
+
+    def _get_client(self) -> OpenAI:
+        """Lazily initialize or return client with validation."""
+        if not self.api_key or self.api_key.startswith("your_") or "change-me" in self.api_key:
+            raise GeminiClientError(
+                "OPENROUTER_API_KEY is not configured. Please add a valid OpenRouter API key to your .env file.",
+                status_code=401,
+            )
+
+        if self._client is None:
+            try:
+                self._client = OpenAI(
+                    base_url=OPENROUTER_BASE_URL,
+                    api_key=self.api_key,
+                    default_headers={
+                        "HTTP-Referer": "https://github.com/cloud-ai-chatbot",
+                        "X-Title": "Cloud-Based AI Chatbot Mini Project",
+                    },
+                )
+            except Exception as e:
+                raise GeminiClientError(f"Could not initialize OpenRouter client: {str(e)}", status_code=500)
+
+        return self._client
+
+    def generate_reply(
+        self,
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        file_text_context: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
+        image_mime: Optional[str] = None,
+        model: Optional[str] = None,
+        effort: Optional[str] = "medium",
+    ) -> str:
+        """
+        Generates an AI response given a user message, optional conversation history,
+        optional document context, optional image bytes, optional model override,
+        and optional reasoning effort ("low", "medium", "high").
+
+        Returns:
+            str: AI response text in Markdown format.
+        """
+        client = self._get_client()
+
+        # Build OpenAI chat completion messages array
+        messages: List[Dict] = [
+            {"role": "system", "content": SYSTEM_INSTRUCTION}
+        ]
+
+        # Append past conversation history
+        if history:
+            for turn in history:
+                role = "user" if turn.get("role") == "user" else "assistant"
+                text = turn.get("text", "").strip()
+                if text:
+                    messages.append({"role": role, "content": text})
+
+        # Construct current user message content
+        user_content_parts = []
+
+        # 1. Document Context (if PDF/TXT/DOCX attached)
+        if file_text_context:
+            doc_context_text = (
+                "[ATTACHED DOCUMENT]\n"
+                "The user has uploaded a document for analysis. Use the content below to answer their request:\n\n"
+                f"{file_text_context}\n\n"
+                "[END ATTACHED DOCUMENT]\n\n"
+            )
+            user_content_parts.append({"type": "text", "text": doc_context_text})
+
+        # 2. Multimodal Image (if image file attached)
+        if image_bytes and image_mime:
+            try:
+                b64_img = base64.b64encode(image_bytes).decode("utf-8")
+                image_data_url = f"data:{image_mime};base64,{b64_img}"
+                user_content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url,
+                        "detail": "auto",
+                    }
+                })
+            except Exception as e:
+                logger.error("Error encoding image to base64: %s", e)
+                raise GeminiClientError("Failed to process attached image for AI analysis.", status_code=400)
+
+        # 3. User question / prompt text
+        user_content_parts.append({"type": "text", "text": message})
+
+        # Add current user message to conversation list
+        if not (image_bytes and image_mime):
+            combined_text = ""
+            if file_text_context:
+                combined_text += (
+                    f"[ATTACHED DOCUMENT]\n{file_text_context}\n[END ATTACHED DOCUMENT]\n\n"
+                )
+            combined_text += message
+            messages.append({"role": "user", "content": combined_text})
+        else:
+            messages.append({"role": "user", "content": user_content_parts})
+
+        # Configure OpenRouter model selection
+        model_map = {
+            "gemini-3.7-flash": "google/gemini-3.7-flash",
+            "gemini-3.6-flash": "google/gemini-3.6-flash",
+            "gemini-3.1-flash-lite": "google/gemini-3.1-flash-lite",
+            "gemini-2.5-flash": "google/gemini-2.5-flash",
+            "google/gemini-3.7-flash": "google/gemini-3.7-flash",
+            "google/gemini-3.6-flash": "google/gemini-3.6-flash",
+            "google/gemini-3.1-flash-lite": "google/gemini-3.1-flash-lite",
+            "google/gemini-2.5-flash": "google/gemini-2.5-flash",
+        }
+        model_to_use = model_map.get(model, model) if model else self.model
+        extra_body = {}
+
+        # Configure Reasoning Effort (low, medium, high)
+        valid_efforts = ("low", "medium", "high")
+        effort_level = effort.lower() if (effort and effort.lower() in valid_efforts) else "medium"
+        extra_body["reasoning"] = {"effort": effort_level}
+        
+        # SMART WEB SEARCH: Only enable web search plugin for text queries when NO document or image is attached.
+        # This prevents credit budget exhaustion on uploaded files.
+        use_web_search = self.enable_web_search and not file_text_context and not image_bytes
+        if use_web_search:
+            extra_body["plugins"] = [{"id": "web"}]
+
+        # Budget-friendly token cap tailored to effort level:
+        # Low effort: 500, Medium: 700, High: 850
+        base_tokens = {"low": 500, "medium": 700, "high": 850}.get(effort_level, 700)
+        max_tokens = min(base_tokens, 700) if (file_text_context or image_bytes) else base_tokens
+
+        try:
+            logger.info("Sending request to OpenRouter (model: %s, effort: %s, web_search: %s, max_tokens: %d)", model_to_use, effort_level, use_web_search, max_tokens)
+            
+            response = client.chat.completions.create(
+                model=model_to_use,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=max_tokens,
+                extra_body=extra_body if extra_body else None,
+            )
+
+            if not response or not response.choices:
+                raise GeminiClientError("The AI model returned an empty response. Please try again.", status_code=502)
+
+            choice_msg = response.choices[0].message
+            reply_text = choice_msg.content
+
+            # Handle models where response content is inside reasoning or message attributes
+            if not reply_text:
+                if hasattr(choice_msg, "reasoning") and choice_msg.reasoning:
+                    reply_text = choice_msg.reasoning
+                else:
+                    raise GeminiClientError("The AI returned no text content.", status_code=502)
+
+            return reply_text.strip()
+
+        except AuthenticationError as e:
+            logger.error("OpenRouter Authentication Error (401)")
+            raise GeminiClientError(
+                "Invalid or expired OpenRouter API Key (401). Please check OPENROUTER_API_KEY in your .env file.",
+                status_code=401,
+            ) from e
+
+        except RateLimitError as e:
+            logger.warning("OpenRouter Rate Limit Exceeded (429)")
+            raise GeminiClientError(
+                "AI rate limit or credit quota exceeded (429). Please wait a moment or check your OpenRouter account balance at openrouter.ai/settings/credits.",
+                status_code=429,
+            ) from e
+
+        except NotFoundError as e:
+            logger.error("OpenRouter Model Not Found (404): %s", model_to_use)
+            raise GeminiClientError(
+                f"The AI model '{model_to_use}' was not found or is unavailable on OpenRouter (404). Check OPENROUTER_MODEL in .env.",
+                status_code=404,
+            ) from e
+
+        except APIConnectionError as e:
+            logger.error("OpenRouter API Connection Error: %s", e)
+            raise GeminiClientError(
+                "Could not connect to OpenRouter servers. Please verify your internet connection and network settings.",
+                status_code=503,
+            ) from e
+
+        except APIStatusError as e:
+            status_code = getattr(e, "status_code", 502)
+            err_str = str(e).lower()
+            if status_code == 402 or "credits" in err_str or "in_flight" in err_str or "afford" in err_str:
+                logger.warning("OpenRouter Credit/Budget Limit (402): %s. Attempting self-healing recovery...", e)
+                
+                # 1. Check if OpenRouter specified exact affordable tokens
+                import re
+                afford_match = re.search(r"can only afford (\d+)", str(e))
+                if afford_match:
+                    affordable = int(afford_match.group(1))
+                    reduced_tokens = max(40, affordable - 10)
+                else:
+                    reduced_tokens = 200
+                
+                try:
+                    logger.info("Retrying with reduced max_tokens=%d without web plugin...", reduced_tokens)
+                    retry_resp = client.chat.completions.create(
+                        model=model_to_use,
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=reduced_tokens,
+                    )
+                    if retry_resp and retry_resp.choices and retry_resp.choices[0].message.content:
+                        return retry_resp.choices[0].message.content.strip()
+                except Exception as retry_err:
+                    logger.warning("Budget reduction retry failed: %s", retry_err)
+
+                # 2. Fallback to free OpenRouter models if credits are completely exhausted
+                if not (image_bytes and image_mime):
+                    for fallback_model in ["liquid/lfm-2.5-2.6b:free", "inclusionai/ling-3.0-flash-fin:free", "nvidia/nemotron-3.5-lightning:free"]:
+                        try:
+                            logger.info("Attempting free fallback model: %s", fallback_model)
+                            fb_resp = client.chat.completions.create(
+                                model=fallback_model,
+                                messages=messages,
+                                temperature=0.7,
+                                max_tokens=500,
+                            )
+                            if fb_resp and fb_resp.choices and fb_resp.choices[0].message.content:
+                                return fb_resp.choices[0].message.content.strip()
+                        except Exception as fb_err:
+                            logger.warning("Fallback model %s failed: %s", fallback_model, fb_err)
+
+                raise GeminiClientError(
+                    "OpenRouter credit budget limit reached (402). Your account balance is low. Please wait a moment for in-flight requests to settle, or top up credits at openrouter.ai/settings/credits.",
+                    status_code=402,
+                ) from e
+
+            logger.error("OpenRouter API Status Error (%d): %s", status_code, getattr(e, "message", str(e)))
+            raise GeminiClientError(
+                f"OpenRouter service error ({status_code}): {getattr(e, 'message', str(e))}",
+                status_code=status_code,
+            ) from e
+
+        except GeminiClientError:
+            raise
+
+        except Exception as e:
+            logger.exception("Unexpected error in OpenRouter AI client")
+            raise GeminiClientError(
+                f"Unexpected error communicating with AI: {str(e)}",
+                status_code=500,
+            ) from e

@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Cloud-Based AI Chatbot with File Analysis using Gemini Flash, OpenRouter, and Microsoft Azure." />
+  <title>Cloud AI Chatbot</title>
+
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- Markdown parser (Marked.js) and Highlight.js for code formatting -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+  <!-- Cache-busting query parameter forces the browser to load latest CSS and JS -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=15.0" />
+</head>
+<body>
+  <div class="app-layout">
+
+    <!-- Mobile Top Navigation Header -->
+    <div class="mobile-topbar">
+      <button id="mobileSidebarToggle" class="icon-btn" aria-label="Toggle Sidebar" title="Toggle Sidebar">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+      </button>
+      <div class="mobile-brand">
+        <div class="cloud-logo-sm">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+        </div>
+        <span>Cloud AI Chatbot</span>
+      </div>
+      <button id="mobileNewChatBtn" class="icon-btn" aria-label="New Chat" title="New Chat">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      </button>
+    </div>
+
+    <!-- Mobile Drawer Overlay -->
+    <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
+    <!-- Left Sidebar (280px-300px fixed) -->
+    <aside id="sidebar" class="sidebar">
+      <!-- Sidebar Header -->
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="cloud-logo">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+          </div>
+          <h1 class="brand-title">Cloud AI Chatbot</h1>
+        </div>
+
+        <!-- Prominent + New Chat Button -->
+        <button id="newChatBtn" class="btn-new-chat" title="Start a fresh conversation">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <span>+ New Chat</span>
+        </button>
+      </div>
+
+      <!-- Scrollable History List -->
+      <div class="sidebar-scrollable">
+        <!-- Pinned Chats Section -->
+        <div class="chat-section" id="pinnedSection">
+          <div class="section-title">
+            <span>📌 Pinned</span>
+            <span id="pinnedCount" class="section-count">0</span>
+          </div>
+          <div id="pinnedChatList" class="chat-list">
+            <!-- Rendered dynamically by script.js -->
+          </div>
+        </div>
+
+        <!-- Previous Chats Section -->
+        <div class="chat-section" id="previousSection">
+          <div class="section-title">
+            <span>💬 Previous Chats</span>
+            <span id="recentCount" class="section-count">0</span>
+          </div>
+          <div id="recentChatList" class="chat-list">
+            <!-- Rendered dynamically by script.js -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Sidebar Footer: Storage Limitation Notice -->
+      <div class="sidebar-footer">
+        <div class="storage-notice" title="Chats are saved locally in your web browser (localStorage) and not stored on an external cloud database.">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+          <span>Saved in local browser storage</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main class="main-content">
+      <!-- Top Header Navigation -->
+      <header class="main-header">
+        <div class="header-left">
+          <div class="cloud-logo-header">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+          </div>
+          <div class="header-info">
+            <h2 class="header-title">Cloud AI Chatbot</h2>
+            <span class="header-subtitle">Powered by Gemini Flash (OpenRouter)</span>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <!-- Share Dropdown Wrap -->
+          <div class="menu-dropdown-wrap">
+            <button id="shareBtn" class="header-btn btn-share" title="Share or copy conversation">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>
+              <span>Share</span>
+            </button>
+            <div id="shareDropdownMenu" class="dropdown-menu hidden">
+              <button id="shareCopyTranscriptBtn" class="dropdown-item">
+                <span>📋 Copy full conversation</span>
+              </button>
+              <button id="shareCopyLinkBtn" class="dropdown-item">
+                <span>🔗 Copy share link</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Header Three-Dot Options Button -->
+          <div class="menu-dropdown-wrap">
+            <button id="headerMenuBtn" class="header-btn-icon" title="Chat options">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg>
+            </button>
+            <div id="headerDropdownMenu" class="dropdown-menu hidden">
+              <button id="headerViewFilesBtn" class="dropdown-item">
+                <span>📎 View files in chat</span>
+              </button>
+              <button id="headerPinBtn" class="dropdown-item">
+                <span>📌 Pin / Unpin chat</span>
+              </button>
+              <button id="headerClearBtn" class="dropdown-item">
+                <span>🗑️ Clear conversation</span>
+              </button>
+              <button id="headerDeleteBtn" class="dropdown-item danger">
+                <span>✕ Delete conversation</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Theme / Light mode Button -->
+          <button id="themeToggleBtn" class="header-btn-icon" title="Toggle theme">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Chat Messages Scroll Container -->
+      <div id="messages" class="messages-container" aria-live="polite">
+        <!-- Welcome Screen (Matching Reference Design) -->
+        <div id="emptyState" class="welcome-screen">
+          <div class="welcome-cloud-icon">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="#2563eb"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+          </div>
+
+          <h1 class="welcome-title">Welcome to Cloud AI Chatbot</h1>
+          <p class="welcome-desc">
+            Ask questions, upload files, or explore the power of cloud computing with AI assistance.
+          </p>
+
+          <!-- 4 Interactive Example Cards (2x2 Grid) -->
+          <div class="cards-grid">
+            <div class="example-card" data-prompt="Explain 3-tier architecture in cloud with real-world examples.">
+              <div class="card-icon-circle">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>
+              </div>
+              <div class="card-body">
+                <strong>Cloud Architecture</strong>
+                <p>Explain 3-tier architecture in cloud.</p>
+              </div>
+              <div class="card-arrow">›</div>
+            </div>
+
+            <div class="example-card" data-prompt="Please summarize this document and highlight the key findings.">
+              <div class="card-icon-circle">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+              </div>
+              <div class="card-body">
+                <strong>Analyze Document</strong>
+                <p>Upload a PDF and ask questions.</p>
+              </div>
+              <div class="card-arrow">›</div>
+            </div>
+
+            <div class="example-card" data-prompt="What is the latest news and current updates on Lionel Messi and the Argentina national team?">
+              <div class="card-icon-circle">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+              </div>
+              <div class="card-body">
+                <strong>Latest Information</strong>
+                <p>Get the latest news on any topic.</p>
+              </div>
+              <div class="card-arrow">›</div>
+            </div>
+
+            <div class="example-card" data-prompt="Please inspect this image and describe all visual elements in detail.">
+              <div class="card-icon-circle">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+              </div>
+              <div class="card-body">
+                <strong>Analyze Image</strong>
+                <p>Upload an image and ask about it.</p>
+              </div>
+              <div class="card-arrow">›</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pre-Send File Attachment Preview -->
+      <div id="filePreview" class="file-preview-card hidden">
+        <div class="file-preview-left">
+          <span id="filePreviewIcon" class="file-type-icon">📎</span>
+          <div class="file-info-text">
+            <span id="filePreviewName" class="file-name-text">document.pdf</span>
+            <span id="filePreviewSize" class="file-size-text">0 KB</span>
+          </div>
+        </div>
+        <button id="removeFileBtn" class="btn-remove-attachment" aria-label="Remove attachment" title="Remove attachment">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+
+      <!-- Message Composer (Bottom Floating Card - ChatGPT/Claude Style) -->
+      <footer class="composer-wrapper">
+        <form id="composerForm" class="composer-card">
+          <!-- Textarea on Top -->
+          <div class="composer-input-area">
+            <textarea
+              id="messageInput"
+              class="composer-textarea"
+              placeholder="Ask anything, @ to mention, / for actions"
+              rows="1"
+              maxlength="4000"
+            ></textarea>
+          </div>
+
+          <!-- Bottom Action Toolbar -->
+          <div class="composer-toolbar">
+            <!-- Left Controls: + File Attachment & Active Model Trigger -->
+            <div class="composer-toolbar-left">
+              <!-- Plus Attachment Button -->
+              <button type="button" id="attachBtn" class="btn-tool-icon btn-attach-plus" aria-label="Attach file" title="Attach PDF, TXT, DOCX, or Image (Max 10MB)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </button>
+              <input type="file" id="fileInput" accept=".pdf,.txt,.docx,.png,.jpg,.jpeg,.webp" hidden />
+
+              <!-- Active Model & Effort Selector Button -->
+              <div class="model-menu-container">
+                <button type="button" id="modelMenuBtn" class="btn-model-trigger" aria-haspopup="true" aria-expanded="false" title="Switch Gemini model and reasoning effort">
+                  <span id="modelMenuLabel">Gemini 3.7 Flash Medium</span>
+                  <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="18 15 12 9 6 15"></polyline>
+                  </svg>
+                </button>
+
+                <!-- Professional Cascading Popover Menu (Matching User Screenshot) -->
+                <div id="modelPopoverMenu" class="model-popover hidden" role="menu">
+                  <div class="popover-header">Model</div>
+                  <div class="popover-list">
+                    <!-- Gemini 3.7 Flash -->
+                    <div class="model-entry active" data-model="google/gemini-3.7-flash" data-name="Gemini 3.7 Flash">
+                      <div class="model-entry-left">
+                        <span class="model-entry-title">Gemini 3.7 Flash</span>
+                        <span class="model-entry-effort">Medium</span>
+                      </div>
+                      <div class="model-entry-right">
+                        <span class="badge-fast">Fast <span class="info-icon">ⓘ</span></span>
+                        <span class="flyout-arrow">›</span>
+                      </div>
+                      <!-- Submenu flyout for effort -->
+                      <div class="effort-flyout">
+                        <div class="effort-option" data-effort="low">Low</div>
+                        <div class="effort-option active" data-effort="medium">Medium</div>
+                        <div class="effort-option" data-effort="high">High</div>
+                      </div>
+                    </div>
+
+                    <!-- Gemini 3.6 Flash -->
+                    <div class="model-entry" data-model="google/gemini-3.6-flash" data-name="Gemini 3.6 Flash">
+                      <div class="model-entry-left">
+                        <span class="model-title">Gemini 3.6 Flash</span>
+                        <span class="model-entry-effort">Medium</span>
+                      </div>
+                      <div class="model-entry-right">
+                        <span class="badge-fast">Fast <span class="info-icon">ⓘ</span></span>
+                        <span class="flyout-arrow">›</span>
+                      </div>
+                      <!-- Submenu flyout for effort -->
+                      <div class="effort-flyout">
+                        <div class="effort-option" data-effort="low">Low</div>
+                        <div class="effort-option active" data-effort="medium">Medium</div>
+                        <div class="effort-option" data-effort="high">High</div>
+                      </div>
+                    </div>
+
+                    <!-- Gemini 3.1 Flash -->
+                    <div class="model-entry" data-model="google/gemini-3.1-flash-lite" data-name="Gemini 3.1 Flash">
+                      <div class="model-entry-left">
+                        <span class="model-title">Gemini 3.1 Flash</span>
+                        <span class="model-entry-effort">Medium</span>
+                      </div>
+                      <div class="model-entry-right">
+                        <span class="badge-fast">Fast <span class="info-icon">ⓘ</span></span>
+                        <span class="flyout-arrow">›</span>
+                      </div>
+                      <!-- Submenu flyout for effort -->
+                      <div class="effort-flyout">
+                        <div class="effort-option" data-effort="low">Low</div>
+                        <div class="effort-option active" data-effort="medium">Medium</div>
+                        <div class="effort-option" data-effort="high">High</div>
+                      </div>
+                    </div>
+
+                    <!-- Gemini 2.5 Flash -->
+                    <div class="model-entry" data-model="google/gemini-2.5-flash" data-name="Gemini 2.5 Flash">
+                      <div class="model-entry-left">
+                        <span class="model-title">Gemini 2.5 Flash</span>
+                        <span class="model-entry-effort">Medium</span>
+                      </div>
+                      <div class="model-entry-right">
+                        <span class="badge-fast">Fast <span class="info-icon">ⓘ</span></span>
+                        <span class="flyout-arrow">›</span>
+                      </div>
+                      <!-- Submenu flyout for effort -->
+                      <div class="effort-flyout">
+                        <div class="effort-option" data-effort="low">Low</div>
+                        <div class="effort-option active" data-effort="medium">Medium</div>
+                        <div class="effort-option" data-effort="high">High</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Controls: Microphone (Speech-to-Text) & Send Button -->
+            <div class="composer-toolbar-right">
+              <!-- Speech-to-Text Microphone Button -->
+              <button type="button" id="micBtn" class="btn-tool-icon btn-mic" aria-label="Speech to text" title="Speech to text (Click to talk)">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                  <line x1="12" y1="19" x2="12" y2="23"></line>
+                  <line x1="8" y1="23" x2="16" y2="23"></line>
+                </svg>
+              </button>
+
+              <!-- Send Button -->
+              <button type="submit" id="sendBtn" class="btn-send-circle" aria-label="Send Message" title="Send message (Enter)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                  <polyline points="12 5 19 12 12 19"></polyline>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </form>
+      </footer>
+    </main>
+
+  </div>
+
+  <!-- Action Toast Notification -->
+  <div id="toastNotification" class="toast hidden"></div>
+
+  <!-- Chat Context Dropdown Menu (Created dynamically in JS) -->
+  <div id="chatItemContextMenu" class="context-menu hidden">
+    <button id="ctxPinBtn" class="context-item">📌 Pin to top</button>
+    <button id="ctxRenameBtn" class="context-item">✏️ Rename</button>
+    <button id="ctxArchiveBtn" class="context-item">📦 Archive</button>
+    <button id="ctxDeleteBtn" class="context-item danger">🗑️ Delete chat</button>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/script.js') }}?v=15.0"></script>
+</body>
+</html>
