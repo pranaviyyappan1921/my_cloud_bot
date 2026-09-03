@@ -1298,6 +1298,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
 
+      let streamError = null;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1311,46 +1313,57 @@ document.addEventListener("DOMContentLoaded", () => {
           if (!trimmed.startsWith("data:")) continue;
           const jsonStr = trimmed.replace(/^data:\s*/, "");
 
+          let data;
           try {
-            const data = JSON.parse(jsonStr);
-
-            if (data.type === "chunk" && data.text) {
-              if (typingIndicator && typingIndicator.parentElement) {
-                typingIndicator.remove();
-              }
-
-              if (!aiBubbleEl) {
-                const aiDOM = createStreamingAiMessageDOM(userDisplayText, attachedName);
-                aiRowEl = aiDOM.row;
-                aiBubbleEl = aiDOM.bubble;
-                aiWrapEl = aiDOM.contentWrap;
-                cursorSpan = aiDOM.cursor;
-                messagesEl.appendChild(aiRowEl);
-              }
-
-              accumulatedText += data.text;
-              const renderedHtml = renderMarkdown(accumulatedText);
-              aiBubbleEl.innerHTML = `<div class="markdown-body">${renderedHtml}</div>`;
-              aiBubbleEl.appendChild(cursorSpan);
-              scrollToBottom(false, false);
-            } else if (data.type === "done") {
-              if (data.reply && !accumulatedText) {
-                accumulatedText = data.reply;
-              }
-            } else if (data.type === "error") {
-              throw new Error(data.error || "An error occurred during streaming.");
-            }
+            data = JSON.parse(jsonStr);
           } catch (jsonErr) {
             console.warn("Error parsing SSE chunk:", jsonErr);
+            continue;
+          }
+
+          if (data.type === "chunk" && data.text) {
+            if (typingIndicator && typingIndicator.parentElement) {
+              typingIndicator.remove();
+            }
+
+            if (!aiBubbleEl) {
+              const aiDOM = createStreamingAiMessageDOM(userDisplayText, attachedName);
+              aiRowEl = aiDOM.row;
+              aiBubbleEl = aiDOM.bubble;
+              aiWrapEl = aiDOM.contentWrap;
+              cursorSpan = aiDOM.cursor;
+              messagesEl.appendChild(aiRowEl);
+            }
+
+            accumulatedText += data.text;
+            const renderedHtml = renderMarkdown(accumulatedText);
+            aiBubbleEl.innerHTML = `<div class="markdown-body">${renderedHtml}</div>`;
+            aiBubbleEl.appendChild(cursorSpan);
+            scrollToBottom(false, false);
+          } else if (data.type === "done") {
+            if (data.reply && !accumulatedText) {
+              accumulatedText = data.reply;
+            }
+          } else if (data.type === "error") {
+            streamError = data.error || "An error occurred during streaming.";
+            break;
           }
         }
+
+        if (streamError) {
+          break;
+        }
+      }
+
+      if (streamError) {
+        throw new Error(streamError);
       }
 
       if (cursorSpan && cursorSpan.parentElement) cursorSpan.remove();
       if (typingIndicator && typingIndicator.parentElement) typingIndicator.remove();
 
       if (!accumulatedText) {
-        accumulatedText = "No response text was generated.";
+        accumulatedText = "⚠️ **Notice:** The AI server did not return a response. Please check your API key in `.env` or try again.";
       }
 
       const aiTimestamp = Date.now();
@@ -1373,6 +1386,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
       scrollToBottom(true, false);
     } catch (err) {
+      if (typingIndicator && typingIndicator.parentElement) typingIndicator.remove();
+      if (cursorSpan && cursorSpan.parentElement) cursorSpan.remove();
+      if (aiRowEl && aiRowEl.parentElement) aiRowEl.remove();
       if (typingIndicator && typingIndicator.parentElement) typingIndicator.remove();
       if (cursorSpan && cursorSpan.parentElement) cursorSpan.remove();
 

@@ -16,6 +16,9 @@ import base64
 import logging
 from typing import List, Dict, Optional, Any, cast
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import openai
 from openai import OpenAI, OpenAIError, APIError, RateLimitError, AuthenticationError, APIConnectionError, NotFoundError, APIStatusError
 
@@ -349,12 +352,8 @@ class GeminiClient:
                 # 2. Fallback to free OpenRouter models if credits are completely exhausted (skip for documents to avoid 15s delay)
                 if not (image_bytes and image_mime) and not file_text_context:
                     free_models = [
-                        "meta-llama/llama-3.2-3b-instruct:free",
-                        "google/gemini-2.0-flash-exp:free",
-                        "mistralai/mistral-7b-instruct:free",
-                        "liquid/lfm-2.5-2.6b:free",
-                        "inclusionai/ling-3.0-flash-fin:free",
                         "nvidia/nemotron-3.5-lightning:free",
+                        "liquid/lfm-2.5-2.6b:free",
                     ]
                     for fallback_model in free_models:
                         try:
@@ -368,8 +367,13 @@ class GeminiClient:
                                     max_tokens=350,
                                 )
                             )
-                            if fb_resp and fb_resp.choices and fb_resp.choices[0].message.content:
-                                return fb_resp.choices[0].message.content.strip()
+                            if fb_resp and fb_resp.choices:
+                                raw_text = (
+                                    getattr(fb_resp.choices[0].message, "content", None)
+                                    or getattr(fb_resp.choices[0].message, "reasoning", None)
+                                )
+                                if raw_text and raw_text.strip():
+                                    return raw_text.strip()
                         except Exception as fb_err:
                             logger.warning("Fallback model %s failed: %s", fallback_model, fb_err)
 
@@ -488,8 +492,10 @@ class GeminiClient:
                     model=model,
                     effort=effort,
                 )
-                yield reply
+                if reply and reply.strip():
+                    yield reply
             except Exception as fb_err:
                 if isinstance(fb_err, GeminiClientError):
                     raise fb_err
-                raise GeminiClientError(f"Streaming error: {str(e)}", status_code=500) from fb_err
+                status_code = getattr(e, "status_code", 500)
+                raise GeminiClientError(f"Streaming error: {str(e)}", status_code=status_code) from fb_err

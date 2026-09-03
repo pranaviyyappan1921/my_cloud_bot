@@ -312,6 +312,18 @@ def chat_stream():
                 yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
 
             full_reply = "".join(accumulated_chunks)
+            if not full_reply.strip():
+                if file_context:
+                    full_reply = generate_document_analysis_report(file_name or "Uploaded Document", file_context, user_message)
+                else:
+                    full_reply = (
+                        "⚠️ **OpenRouter Credit Limit Notice (402)**\n\n"
+                        "Your OpenRouter API key has reached its token credit limit.\n\n"
+                        "- To get **free, unlimited conversational chat** with 1,500 requests/day, create a 100% free Google Gemini key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and add it as `GEMINI_API_KEY=AIzaSy...` in `.env`.\n"
+                        "- Alternatively, top up your OpenRouter credits at [openrouter.ai/settings/credits](https://openrouter.ai/settings/credits)."
+                    )
+                yield f"data: {json.dumps({'type': 'chunk', 'text': full_reply})}\n\n"
+
             yield f"data: {json.dumps({'type': 'done', 'reply': full_reply, 'file_name': file_name})}\n\n"
 
         except GeminiClientError as e:
@@ -333,7 +345,18 @@ def chat_stream():
                 yield f"data: {json.dumps({'type': 'error', 'error': e.message})}\n\n"
         except Exception as e:
             logger.exception("Unexpected error in streaming response")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            err_str = str(e)
+            if "credit" in err_str.lower() or "402" in err_str or "quota" in err_str.lower() or "budget" in err_str.lower():
+                notice = (
+                    "⚠️ **OpenRouter Credit Limit Notice (402)**\n\n"
+                    "Your OpenRouter API key has reached its token credit limit.\n\n"
+                    "- To get **free, unlimited conversational chat** with 1,500 requests/day, create a 100% free Google Gemini key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and add it as `GEMINI_API_KEY=AIzaSy...` in `.env`.\n"
+                    "- Alternatively, top up your OpenRouter credits at [openrouter.ai/settings/credits](https://openrouter.ai/settings/credits)."
+                )
+                yield f"data: {json.dumps({'type': 'chunk', 'text': notice})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'reply': notice, 'file_name': file_name})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'error': err_str})}\n\n"
 
     streamed_data: Any = stream_with_context(cast(Any, event_stream()))
     response = Response(streamed_data, mimetype="text/event-stream")
