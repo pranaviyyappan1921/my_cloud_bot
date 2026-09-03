@@ -1284,7 +1284,14 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       if (!response.ok) {
-        throw new Error(`Server returned status ${response.status}`);
+        let errDetail = `Server returned status ${response.status}`;
+        try {
+          const errJson = await response.json();
+          if (errJson && errJson.error) {
+            errDetail = errJson.error;
+          }
+        } catch (_) {}
+        throw new Error(errDetail);
       }
 
       const reader = response.body.getReader();
@@ -2030,6 +2037,9 @@ document.addEventListener("DOMContentLoaded", () => {
     formData.append("message", promptText);
     formData.append("model", selectedModel);
     formData.append("effort", selectedEffort);
+    if (attachedFileName) {
+      formData.append("attached_file_name", attachedFileName);
+    }
 
     const targetIdx = msgIndex >= 0 ? msgIndex : session.messages.length - 1;
     const historyTurns = session.messages.slice(0, targetIdx).map((m) => ({

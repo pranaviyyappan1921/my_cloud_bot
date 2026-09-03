@@ -62,6 +62,20 @@ class GeminiClient:
         self.model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
         self.enable_web_search = os.getenv("ENABLE_WEB_SEARCH", "true").lower() in ("true", "1", "yes")
 
+        self.gemini_direct_key = os.getenv("GEMINI_API_KEY")
+        self._genai_model: Optional[Any] = None
+        if self.gemini_direct_key and self.gemini_direct_key.startswith("AIzaSy"):
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self.gemini_direct_key)
+                self._genai_model = genai.GenerativeModel(
+                    model_name="gemini-2.0-flash",
+                    system_instruction=SYSTEM_INSTRUCTION
+                )
+                logger.info("Configured direct Google Gemini API client (Gemini 2.0 Flash).")
+            except Exception as e:
+                logger.warning("Failed to initialize direct Google Gemini: %s", e)
+
         self._client: Optional[OpenAI] = None
         if self.api_key and not self.api_key.startswith("your_"):
             try:
@@ -79,12 +93,13 @@ class GeminiClient:
     def _get_client(self) -> OpenAI:
         """Lazily initialize or return client with validation."""
         if not self.api_key or self.api_key.startswith("your_") or "change-me" in self.api_key:
-            raise GeminiClientError(
-                "OPENROUTER_API_KEY is not configured. Please add a valid OpenRouter API key to your .env file.",
-                status_code=401,
-            )
+            if not self._genai_model:
+                raise GeminiClientError(
+                    "OPENROUTER_API_KEY or GEMINI_API_KEY is not configured. Please add a valid API key to your .env file.",
+                    status_code=401,
+                )
 
-        if self._client is None:
+        if self._client is None and self.api_key:
             try:
                 self._client = OpenAI(
                     base_url=OPENROUTER_BASE_URL,
@@ -95,7 +110,10 @@ class GeminiClient:
                     },
                 )
             except Exception as e:
-                raise GeminiClientError(f"Could not initialize OpenRouter client: {str(e)}", status_code=500)
+                if not self._genai_model:
+                    raise GeminiClientError(f"Could not initialize OpenRouter client: {str(e)}", status_code=500)
+
+        return self._client
 
         return self._client
 
@@ -328,8 +346,8 @@ class GeminiClient:
                 except Exception as retry_err:
                     logger.warning("Budget reduction retry failed: %s", retry_err)
 
-                # 2. Fallback to free OpenRouter models if credits are completely exhausted
-                if not (image_bytes and image_mime):
+                # 2. Fallback to free OpenRouter models if credits are completely exhausted (skip for documents to avoid 15s delay)
+                if not (image_bytes and image_mime) and not file_text_context:
                     free_models = [
                         "meta-llama/llama-3.2-3b-instruct:free",
                         "google/gemini-2.0-flash-exp:free",
@@ -354,6 +372,20 @@ class GeminiClient:
                                 return fb_resp.choices[0].message.content.strip()
                         except Exception as fb_err:
                             logger.warning("Fallback model %s failed: %s", fallback_model, fb_err)
+
+                # Try Google Gemini direct API if configured
+                if self._genai_model:
+                    try:
+                        logger.info("Falling back to direct Google Gemini API...")
+                        prompt_content = []
+                        if file_text_context:
+                            prompt_content.append(f"[ATTACHED DOCUMENT CONTENT]:\n{file_text_context}")
+                        prompt_content.append(f"User Request: {message}")
+                        res = self._genai_model.generate_content(prompt_content)
+                        if res and res.text:
+                            return res.text.strip()
+                    except Exception as g_err:
+                        logger.warning("Google Gemini direct fallback failed: %s", g_err)
 
                 raise GeminiClientError(
                     "OpenRouter credit budget limit reached (402). Your account balance is low. Please wait a moment for in-flight requests to settle, or top up credits at openrouter.ai/settings/credits.",

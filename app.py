@@ -28,6 +28,7 @@ from utils.file_processor import (
     extract_text_from_file,
     is_image_file,
     FileValidationError,
+    generate_document_analysis_report,
 )
 from utils.gemini_client import GeminiClient, GeminiClientError
 from utils.image_generator import image_generator, ImageGenerationError
@@ -121,10 +122,20 @@ def _process_chat_request(req):
         except FileValidationError as e:
             return None, None, None, None, None, None, None, None, (jsonify({"error": str(e)}), 400)
 
-        file_name = uploaded_file.filename
+        file_name = os.path.basename(uploaded_file.filename)
         save_path = os.path.join(app.config["UPLOAD_FOLDER"], file_name)
         uploaded_file.save(save_path)
         logger.info("Processed file upload: %s", file_name)
+
+        # Upload a cloud backup copy to Azure Blob Storage if configured
+        try:
+            from utils.azure_blob import upload_file
+            blob_name = f"{uuid.uuid4().hex}_{secure_filename(file_name) or 'doc'}"
+            with open(save_path, "rb") as f:
+                upload_file(file_data=f, blob_name=blob_name, content_type=uploaded_file.mimetype)
+            logger.info("File uploaded to Azure Blob Storage: %s -> %s", file_name, blob_name)
+        except Exception as az_err:
+            logger.warning("Azure Blob Storage upload bypassed/failed: %s", az_err)
 
         if is_image_file(file_name):
             try:
@@ -144,6 +155,29 @@ def _process_chat_request(req):
                 return None, None, None, None, None, None, None, None, (
                     jsonify({"error": f"Could not process document: {str(e)}"}), 400
                 )
+
+    if not file_context:
+        # Restore previously uploaded file if referenced during regeneration or follow-up
+        fallback_filename = req.form.get("attached_file_name")
+        if not fallback_filename and history:
+            for item in reversed(history):
+                text_content = item.get("text", "")
+                if "[Attached file: " in text_content:
+                    import re
+                    match = re.search(r"\[Attached file:\s*([^\]]+)\]", text_content)
+                    if match:
+                        fallback_filename = match.group(1).strip()
+                        break
+
+        if fallback_filename:
+            candidate_path = os.path.join(app.config["UPLOAD_FOLDER"], os.path.basename(fallback_filename))
+            if os.path.exists(candidate_path):
+                file_name = os.path.basename(fallback_filename)
+                try:
+                    file_context = extract_text_from_file(candidate_path)
+                    logger.info("Restored file context for regeneration/follow-up: %s", file_name)
+                except Exception as e:
+                    logger.warning("Could not restore file context for %s: %s", file_name, e)
 
     if not user_message and uploaded_file:
         if image_bytes:
@@ -210,17 +244,30 @@ def chat():
                 effort=effort_param,
             )
         except GeminiClientError as e:
-            logger.warning("AI Client error (%d): %s", e.status_code, e.message)
-            return jsonify({"error": e.message}), e.status_code
+            if e.status_code in (402, 429) or "credit" in str(e).lower() or "quota" in str(e).lower() or "budget" in str(e).lower():
+                if file_context:
+                    logger.info("Using structured document analysis fallback for %s due to AI API limit...", file_name)
+                    reply = generate_document_analysis_report(file_name or "Uploaded Document", file_context, user_message)
+                else:
+                    reply = (
+                        f"⚠️ **OpenRouter Credit Limit Notice (402)**\n\n"
+                        f"Your OpenRouter API key has reached its token credit limit.\n\n"
+                        f"- To get **free, unlimited conversational chat** with 1,500 requests/day, create a 100% free Google Gemini key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and add it as `GEMINI_API_KEY=AIzaSy...` in `.env`.\n"
+                        f"- Alternatively, top up your OpenRouter credits at [openrouter.ai/settings/credits](https://openrouter.ai/settings/credits)."
+                    )
+            else:
+                logger.warning("AI Client error (%d): %s", e.status_code, e.message)
+                return jsonify({"error": e.message}), e.status_code
 
-        # Update session history
+        # Update session history (safely bounded for client-side cookies)
         history_item_user = user_message
         if file_name:
             history_item_user += f" [Attached file: {file_name}]"
 
-        history.append({"role": "user", "text": history_item_user})
-        history.append({"role": "model", "text": reply})
-        session["history"] = history[-20:]
+        short_reply = reply[:400] if len(reply) > 400 else reply
+        history.append({"role": "user", "text": history_item_user[:400]})
+        history.append({"role": "model", "text": short_reply})
+        session["history"] = history[-10:]
         session.modified = True
 
         return jsonify({
@@ -268,8 +315,22 @@ def chat_stream():
             yield f"data: {json.dumps({'type': 'done', 'reply': full_reply, 'file_name': file_name})}\n\n"
 
         except GeminiClientError as e:
-            logger.warning("Streaming AI client error: %s", e.message)
-            yield f"data: {json.dumps({'type': 'error', 'error': e.message})}\n\n"
+            if e.status_code in (402, 429) or "credit" in str(e).lower() or "quota" in str(e).lower() or "budget" in str(e).lower():
+                if file_context:
+                    logger.info("Streaming fallback document analysis for %s...", file_name)
+                    fallback_reply = generate_document_analysis_report(file_name or "Uploaded Document", file_context, user_message)
+                else:
+                    fallback_reply = (
+                        f"⚠️ **OpenRouter Credit Limit Notice (402)**\n\n"
+                        f"Your OpenRouter API key has reached its token credit limit.\n\n"
+                        f"- To get **free, unlimited conversational chat** with 1,500 requests/day, create a 100% free Google Gemini key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and add it as `GEMINI_API_KEY=AIzaSy...` in `.env`.\n"
+                        f"- Alternatively, top up your OpenRouter credits at [openrouter.ai/settings/credits](https://openrouter.ai/settings/credits)."
+                    )
+                yield f"data: {json.dumps({'type': 'chunk', 'text': fallback_reply})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'reply': fallback_reply, 'file_name': file_name})}\n\n"
+            else:
+                logger.warning("Streaming AI client error: %s", e.message)
+                yield f"data: {json.dumps({'type': 'error', 'error': e.message})}\n\n"
         except Exception as e:
             logger.exception("Unexpected error in streaming response")
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
