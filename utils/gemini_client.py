@@ -62,7 +62,10 @@ class GeminiClient:
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
-        self.model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+        env_model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+        if env_model in ("google/gemini-2.0-flash-001", "google/gemini-3.7-flash", "google/gemini-3.6-flash", "google/gemini-3.1-flash-lite"):
+            env_model = DEFAULT_MODEL
+        self.model = model or env_model
         self.enable_web_search = os.getenv("ENABLE_WEB_SEARCH", "true").lower() in ("true", "1", "yes")
 
         self.gemini_direct_key = os.getenv("GEMINI_API_KEY")
@@ -214,7 +217,7 @@ class GeminiClient:
         else:
             messages.append({"role": "user", "content": user_content_parts})
 
-        # Configure OpenRouter model selection (mapped to verified global endpoints)
+        # Configure OpenRouter model selection (strictly mapped to verified global endpoints)
         model_map = {
             "gemini-3.7-flash": "google/gemini-2.5-flash",
             "gemini-3.6-flash": "google/gemini-2.5-flash",
@@ -228,8 +231,12 @@ class GeminiClient:
             "google/gemini-2.5-flash-lite": "google/gemini-2.5-flash-lite",
             "google/gemini-2.0-flash-001": "google/gemini-2.5-flash",
             "google/gemini-2.0-flash-lite-001": "google/gemini-2.5-flash-lite",
+            "google/gemini-flash-1.5": "google/gemini-2.5-flash",
         }
-        model_to_use = model_map.get(model, model) if model else self.model
+        raw_model = model or self.model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL
+        model_to_use = model_map.get(raw_model, raw_model)
+        if not model_to_use or model_to_use in ("google/gemini-2.0-flash-001", "google/gemini-3.7-flash", "google/gemini-3.6-flash", "google/gemini-3.1-flash-lite"):
+            model_to_use = "google/gemini-2.5-flash"
         extra_body = {}
 
         # Configure Reasoning Effort (low, medium, high)
