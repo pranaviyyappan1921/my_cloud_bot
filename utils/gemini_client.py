@@ -24,8 +24,8 @@ from openai import OpenAI, OpenAIError, APIError, RateLimitError, Authentication
 
 logger = logging.getLogger("chatbot.client")
 
-# Active verified OpenRouter model with universal regional availability.
-DEFAULT_MODEL = "google/gemini-2.0-flash-001"
+# Active verified OpenRouter model with universal availability.
+DEFAULT_MODEL = "google/gemini-2.5-flash"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 SYSTEM_INSTRUCTION = """You are a modern, helpful, smart, and friendly AI assistant.
@@ -216,16 +216,18 @@ class GeminiClient:
 
         # Configure OpenRouter model selection (mapped to verified global endpoints)
         model_map = {
-            "gemini-3.7-flash": "google/gemini-2.0-flash-001",
-            "gemini-3.6-flash": "google/gemini-2.0-flash-001",
-            "gemini-3.1-flash-lite": "google/gemini-2.0-flash-lite-001",
+            "gemini-3.7-flash": "google/gemini-2.5-flash",
+            "gemini-3.6-flash": "google/gemini-2.5-flash",
+            "gemini-3.1-flash-lite": "google/gemini-2.5-flash-lite",
             "gemini-2.5-flash": "google/gemini-2.5-flash",
-            "google/gemini-3.7-flash": "google/gemini-2.0-flash-001",
-            "google/gemini-3.6-flash": "google/gemini-2.0-flash-001",
-            "google/gemini-3.1-flash-lite": "google/gemini-2.0-flash-lite-001",
+            "gemini-2.5-flash-lite": "google/gemini-2.5-flash-lite",
+            "google/gemini-3.7-flash": "google/gemini-2.5-flash",
+            "google/gemini-3.6-flash": "google/gemini-2.5-flash",
+            "google/gemini-3.1-flash-lite": "google/gemini-2.5-flash-lite",
             "google/gemini-2.5-flash": "google/gemini-2.5-flash",
-            "google/gemini-2.0-flash-001": "google/gemini-2.0-flash-001",
-            "google/gemini-2.0-flash-lite-001": "google/gemini-2.0-flash-lite-001",
+            "google/gemini-2.5-flash-lite": "google/gemini-2.5-flash-lite",
+            "google/gemini-2.0-flash-001": "google/gemini-2.5-flash",
+            "google/gemini-2.0-flash-lite-001": "google/gemini-2.5-flash-lite",
         }
         model_to_use = model_map.get(model, model) if model else self.model
         extra_body = {}
@@ -328,12 +330,46 @@ class GeminiClient:
                 status_code=429,
             ) from e
 
-        except NotFoundError as e:
-            logger.error("OpenRouter Model Not Found (404): %s", model_to_use)
-            raise GeminiClientError(
-                f"The AI model '{model_to_use}' was not found or is unavailable on OpenRouter (404). Check OPENROUTER_MODEL in .env.",
-                status_code=404,
-            ) from e
+        except (NotFoundError, APIStatusError) as e:
+            status_code = getattr(e, "status_code", 502)
+            err_str = str(e).lower()
+            logger.warning("OpenRouter error (%s): %s. Attempting global resilient fallback...", status_code, e)
+            
+            # Universal fallback models verified on OpenRouter
+            fallbacks = [
+                "google/gemini-2.5-flash",
+                "google/gemini-2.5-flash-lite",
+                "meta-llama/llama-3.3-70b-instruct",
+                "nvidia/nemotron-3.5-lightning:free",
+            ]
+            for fb_m in fallbacks:
+                if fb_m != model_to_use:
+                    try:
+                        logger.info("Attempting resilient fallback model: %s", fb_m)
+                        fb_resp = cast(
+                            Any,
+                            client.chat.completions.create(
+                                model=fb_m,
+                                messages=messages,
+                                temperature=0.7,
+                                max_tokens=max_tokens,
+                            )
+                        )
+                        if fb_resp and fb_resp.choices:
+                            txt = (
+                                getattr(fb_resp.choices[0].message, "content", None)
+                                or getattr(fb_resp.choices[0].message, "reasoning", None)
+                            )
+                            if txt and txt.strip():
+                                return txt.strip()
+                    except Exception as fb_err:
+                        logger.warning("Resilient fallback %s failed: %s", fb_m, fb_err)
+
+            if isinstance(e, NotFoundError) or status_code == 404:
+                raise GeminiClientError(
+                    f"The AI model '{model_to_use}' was not found or is unavailable on OpenRouter (404). Check OPENROUTER_MODEL in .env.",
+                    status_code=404,
+                ) from e
 
         except APIConnectionError as e:
             logger.error("OpenRouter API Connection Error: %s", e)
