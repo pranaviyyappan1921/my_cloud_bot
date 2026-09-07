@@ -214,16 +214,18 @@ class GeminiClient:
         else:
             messages.append({"role": "user", "content": user_content_parts})
 
-        # Configure OpenRouter model selection
+        # Configure OpenRouter model selection (mapped to verified global endpoints)
         model_map = {
-            "gemini-3.7-flash": "google/gemini-3.7-flash",
-            "gemini-3.6-flash": "google/gemini-3.6-flash",
-            "gemini-3.1-flash-lite": "google/gemini-3.1-flash-lite",
+            "gemini-3.7-flash": "google/gemini-2.0-flash-001",
+            "gemini-3.6-flash": "google/gemini-2.0-flash-001",
+            "gemini-3.1-flash-lite": "google/gemini-2.0-flash-lite-001",
             "gemini-2.5-flash": "google/gemini-2.5-flash",
-            "google/gemini-3.7-flash": "google/gemini-3.7-flash",
-            "google/gemini-3.6-flash": "google/gemini-3.6-flash",
-            "google/gemini-3.1-flash-lite": "google/gemini-3.1-flash-lite",
+            "google/gemini-3.7-flash": "google/gemini-2.0-flash-001",
+            "google/gemini-3.6-flash": "google/gemini-2.0-flash-001",
+            "google/gemini-3.1-flash-lite": "google/gemini-2.0-flash-lite-001",
             "google/gemini-2.5-flash": "google/gemini-2.5-flash",
+            "google/gemini-2.0-flash-001": "google/gemini-2.0-flash-001",
+            "google/gemini-2.0-flash-lite-001": "google/gemini-2.0-flash-lite-001",
         }
         model_to_use = model_map.get(model, model) if model else self.model
         extra_body = {}
