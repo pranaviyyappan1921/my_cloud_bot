@@ -24,8 +24,8 @@ from openai import OpenAI, OpenAIError, APIError, RateLimitError, Authentication
 
 logger = logging.getLogger("chatbot.client")
 
-# Active verified OpenRouter model for Gemini Flash.
-DEFAULT_MODEL = "google/gemini-3.7-flash"
+# Active verified OpenRouter model with universal regional availability.
+DEFAULT_MODEL = "google/gemini-2.0-flash-001"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 SYSTEM_INSTRUCTION = """You are a modern, helpful, smart, and friendly AI assistant.
@@ -417,6 +417,37 @@ class GeminiClient:
                     "OpenRouter credit budget limit reached (402). Your account balance is low. Please wait a moment for in-flight requests to settle, or top up credits at openrouter.ai/settings/credits.",
                     status_code=402,
                 ) from e
+
+            if status_code == 403 or "region" in err_str or "geo" in err_str or "routing" in err_str:
+                logger.warning("OpenRouter regional/geo restriction error (%d): %s. Attempting global fallback models...", status_code, e)
+                geo_fallbacks = [
+                    "meta-llama/llama-3.3-70b-instruct",
+                    "mistralai/mistral-small-24b-instruct-2501",
+                    "deepseek/deepseek-chat",
+                    "google/gemini-2.0-flash-001",
+                    "nvidia/nemotron-3.5-lightning:free",
+                ]
+                for alt_model in geo_fallbacks:
+                    try:
+                        logger.info("Attempting geo-fallback model: %s", alt_model)
+                        alt_resp = cast(
+                            Any,
+                            client.chat.completions.create(
+                                model=alt_model,
+                                messages=messages,
+                                temperature=0.7,
+                                max_tokens=max_tokens,
+                            )
+                        )
+                        if alt_resp and alt_resp.choices:
+                            alt_text = (
+                                getattr(alt_resp.choices[0].message, "content", None)
+                                or getattr(alt_resp.choices[0].message, "reasoning", None)
+                            )
+                            if alt_text and alt_text.strip():
+                                return alt_text.strip()
+                    except Exception as alt_err:
+                        logger.warning("Geo-fallback model %s failed: %s", alt_model, alt_err)
 
             logger.error("OpenRouter API Status Error (%d): %s", status_code, getattr(e, "message", str(e)))
             raise GeminiClientError(
