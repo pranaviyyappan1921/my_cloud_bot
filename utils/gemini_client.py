@@ -93,20 +93,44 @@ class GeminiClient:
             except Exception as e:
                 logger.error("Failed to initialize OpenAI client for OpenRouter: %s", type(e).__name__)
 
+    def _get_api_key(self) -> Optional[str]:
+        """Dynamically resolve API key from instance or environment."""
+        key = self.api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if key:
+            key = str(key).strip().strip("\"'").strip()
+            if key.startswith("your_") or "change-me" in key or not key:
+                return None
+        return key
+
     def _get_client(self) -> OpenAI:
         """Lazily initialize or return client with validation."""
-        if not self.api_key or self.api_key.startswith("your_") or "change-me" in self.api_key:
+        active_key = self._get_api_key()
+        if not active_key and not self._genai_model:
+            # Check if direct GEMINI_API_KEY was added dynamically
+            direct_gemini = os.getenv("GEMINI_API_KEY")
+            if direct_gemini and direct_gemini.strip().strip("\"'").startswith("AIzaSy"):
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=direct_gemini.strip().strip("\"'"))
+                    self._genai_model = genai.GenerativeModel(
+                        model_name="gemini-2.0-flash",
+                        system_instruction=SYSTEM_INSTRUCTION
+                    )
+                    logger.info("Configured direct Google Gemini API client dynamically.")
+                except Exception as e:
+                    logger.warning("Failed to initialize direct Google Gemini dynamically: %s", e)
+
             if not self._genai_model:
                 raise GeminiClientError(
-                    "OPENROUTER_API_KEY or GEMINI_API_KEY is not configured. Please add a valid API key to your .env file.",
+                    "OPENROUTER_API_KEY or GEMINI_API_KEY is not configured. Please add a valid API key in Azure App Service Environment Variables (or your .env file locally).",
                     status_code=401,
                 )
 
-        if self._client is None and self.api_key:
+        if self._client is None and active_key:
             try:
                 self._client = OpenAI(
                     base_url=OPENROUTER_BASE_URL,
-                    api_key=self.api_key,
+                    api_key=active_key,
                     default_headers={
                         "HTTP-Referer": "https://github.com/cloud-ai-chatbot",
                         "X-Title": "Cloud-Based AI Chatbot Mini Project",
@@ -115,8 +139,6 @@ class GeminiClient:
             except Exception as e:
                 if not self._genai_model:
                     raise GeminiClientError(f"Could not initialize OpenRouter client: {str(e)}", status_code=500)
-
-        return self._client
 
         return self._client
 
