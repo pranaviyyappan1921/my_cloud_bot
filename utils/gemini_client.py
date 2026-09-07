@@ -129,7 +129,7 @@ class GeminiClient:
                     status_code=401,
                 )
 
-        if self._client is None and active_key:
+        if active_key and (self._client is None or getattr(self._client, "api_key", None) != active_key):
             try:
                 self._client = OpenAI(
                     base_url=OPENROUTER_BASE_URL,
