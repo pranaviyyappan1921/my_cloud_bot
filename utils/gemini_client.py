@@ -1,49 +1,157 @@
 """
 OpenRouter / Gemini API client for the Cloud-Based AI Chatbot.
-High Performance Cloud Computing Project.
-
-Features:
+Provides:
 - OpenAI-compatible Python SDK connected to OpenRouter API (https://openrouter.ai/api/v1)
-- Currently supported Google Gemini Flash model: google/gemini-2.5-flash
-- Smart Web search grounding for live facts when no document is attached (avoids 402 in-flight budget exhaustion)
-- Multimodal image question-answering via base64 data URLs
+- Real-time Web Search Grounding via OpenRouter web plugin (plugins=[{"id": "web"}])
+- Intelligent live-query / current-information intent detection
+- Tool-call sanitization (stripping raw internal <|tool_call_start|> markers)
+- Multi-tier resilient fallback: Web Search -> Normal Model -> Clean Free Fallback Models -> Direct Gemini
+- Safe exponential backoff retries for transient errors (429, 408, 500, 502, 503, 504, network drops)
+- Full multimodal vision support (base64 image data URLs)
 - Document text context integration for PDF, TXT, and DOCX files
-- Defensive error handling: 401 Auth, 402 Budget, 429 Rate Limits, 404 Model, Network errors
+- Universal general-purpose AI assistant system instruction (programming, math, engineering, cloud, documents)
+- Clean extraction and preservation of web search citations/sources
+- Streaming (SSE) and synchronous chat generation
 """
 
 import os
+import re
+import time
 import base64
 import logging
-from typing import List, Dict, Optional, Any, cast
+from typing import List, Dict, Optional, Any, Generator, Tuple, cast
 
 from dotenv import load_dotenv
 load_dotenv()
 
 import openai
-from openai import OpenAI, OpenAIError, APIError, RateLimitError, AuthenticationError, APIConnectionError, NotFoundError, APIStatusError
+from openai import (
+    OpenAI,
+    OpenAIError,
+    APIError,
+    RateLimitError,
+    AuthenticationError,
+    APIConnectionError,
+    NotFoundError,
+    APIStatusError,
+    APITimeoutError,
+)
 
 logger = logging.getLogger("chatbot.client")
 
-# Active verified OpenRouter model with universal availability.
-DEFAULT_MODEL = "google/gemini-2.5-flash"
+# Active verified OpenRouter default model
+DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-3.7-flash")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+REQUEST_TIMEOUT_SECONDS = 45.0
+MAX_RETRIES = 2
 
-SYSTEM_INSTRUCTION = """You are a modern, helpful, smart, and friendly AI assistant.
+# General-purpose AI Assistant instruction
+SYSTEM_INSTRUCTION = """You are a highly capable, intelligent, and helpful general-purpose AI assistant.
 
-Interaction Rules:
-1. Natural Greetings:
-   - For simple greetings (such as "hello", "hi", "hey", "good morning", "how are you"), respond ONLY with a short, warm, and natural greeting (e.g., "Hello! 👋 How can I help you today?").
-   - NEVER introduce yourself with long project titles, college project descriptions, or unsolicited disclaimers. Keep greetings strictly to 1 or 2 concise sentences.
-2. Direct Answers:
-   - Answer the user's specific request directly and concisely without conversational filler.
-3. Technical & General Knowledge:
-   - Provide clear, well-structured explanations using clean Markdown (bold text, bullet points, syntax-highlighted code blocks).
-4. Current Events & Live Information:
-   - For recent facts, news, sports, politics, or time-sensitive events, provide accurate, up-to-date information.
-5. Attached Document & Multimodal Analysis:
+Core Capabilities:
+1. General Knowledge & Reasoning:
+   - Provide accurate, comprehensive, and well-reasoned answers across science, history, arts, philosophy, and daily life.
+   - For complex questions, provide structured step-by-step explanations.
+2. Programming & Technical Computing:
+   - Provide clean, efficient, bug-free code with explanations in Python, JavaScript, TypeScript, C, C++, Java, Rust, Go, SQL, HTML/CSS, Bash, and modern frameworks.
+   - Use standard Markdown fenced code blocks with appropriate language tags.
+3. Mathematics & Engineering:
+   - Solve mathematical, physical, engineering, and data science problems with explicit derivations and formulas.
+4. Cloud Computing & DevOps:
+   - Deep expertise in Microsoft Azure, AWS, Google Cloud, Docker, Kubernetes, Linux, CI/CD, and microservices architecture.
+5. Writing & Summarization:
+   - Produce concise summaries, essays, translations, reports, and clear bullet-point takeaways.
+6. Current Events & Live Information:
+   - When web-grounded search data is provided, use the most up-to-date facts and cite relevant sources accurately.
+7. Document & Multimodal Analysis:
    - When a document is attached under [ATTACHED DOCUMENT], answer directly based on the uploaded content.
-   - When an image is attached, inspect the image and describe or answer questions about its visual elements.
+   - When an image is attached, inspect visual features, diagrams, text (OCR), charts, and design elements.
+
+Interaction Style:
+- Answer the user's question directly in fluent natural language.
+- For simple greetings ("hello", "hi", "hey"), respond with a friendly, natural greeting (1-2 sentences).
+- Never output raw tool-calling tags or code tokens like <|tool_call_start|> directly to the user.
+- Present information with clean Markdown (headings, bullet points, bold key terms).
 """
+
+# Regex patterns for live / current information queries
+LIVE_QUERY_PATTERNS = [
+    r"\b(latest|today|current|currently|recent|recently|breaking|trending)\b",
+    r"\b(this week|this month|this year|yesterday|tomorrow|tonight)\b",
+    r"\b(news|headlines|updates?|announcements?|press release|developments?)\b",
+    r"\b(weather|forecast|temperature|climate today)\b",
+    r"\b(stock price|share price|market cap|exchange rate|crypto price|bitcoin price|sensex|nifty|nasdaq)\b",
+    r"\b(score|scores|match|cricket match|football match|premier league|ipl|world cup|nba|nfl|who won|who is winning)\b",
+    r"\b(election|polls|cabinet|minister|president|prime minister now)\b",
+    r"\b(new version|release date|latest release|patch notes|changelog)\b",
+    r"\b(what happened|what's happening|whats happening)\b",
+    r"\b(latest ai news|latest tech news|latest technology news)\b",
+]
+
+LIVE_QUERY_REGEX = re.compile("|".join(f"(?:{p})" for p in LIVE_QUERY_PATTERNS), re.IGNORECASE)
+
+
+def is_live_query(message: str) -> bool:
+    """Detects whether a user prompt requires real-time / current web information."""
+    if not message:
+        return False
+    msg = message.strip()
+    return bool(LIVE_QUERY_REGEX.search(msg))
+
+
+def clean_ai_output(text: Optional[str]) -> str:
+    """
+    Cleans internal tool-call markers, raw google query syntaxes, or internal tokens
+    so the end-user always receives clean, human-readable natural language.
+    """
+    if not text:
+        return ""
+    # Strip tool call blocks: <|tool_call_start|>...<|tool_call_end|>
+    cleaned = re.sub(r"<\|tool_call_start\|>.*?<\|tool_call_end\|>", "", text, flags=re.DOTALL)
+    # Strip thoughts: <|thought|>...<|thought_end|> or <thought>...</thought>
+    cleaned = re.sub(r"<\|thought\|>.*?<\|thought_end\|>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<thought>.*?</thought>", "", cleaned, flags=re.DOTALL)
+    # Strip standalone tool call representations like [google(query=...)] or [read_document(...)]
+    cleaned = re.sub(r"\[(?:google|read_document|news|search)\([^\]]*\)[^\]]*\]", "", cleaned, flags=re.DOTALL)
+    # Strip remaining special tokens
+    cleaned = re.sub(r"<\|[^>]*\|>", "", cleaned)
+    return cleaned.strip()
+
+
+def extract_sources_from_response(response_obj: Any) -> List[Dict[str, str]]:
+    """Extracts citations and source metadata from OpenRouter response object if available."""
+    sources = []
+    try:
+        if not response_obj or not getattr(response_obj, "choices", None):
+            return sources
+
+        choice = response_obj.choices[0]
+        msg = getattr(choice, "message", None)
+        if not msg:
+            return sources
+
+        # Check for annotations / citations in OpenRouter message object
+        annotations = getattr(msg, "annotations", None) or getattr(msg, "citations", None)
+        if isinstance(annotations, list):
+            for item in annotations:
+                if isinstance(item, dict):
+                    url = item.get("url") or item.get("link")
+                    title = item.get("title") or url
+                    if url:
+                        sources.append({"title": title, "url": url})
+
+        # Check for plugins output in response metadata
+        extra = getattr(response_obj, "extra", None) or getattr(response_obj, "model_extra", None)
+        if isinstance(extra, dict):
+            citations = extra.get("citations") or []
+            for c in citations:
+                if isinstance(c, dict) and c.get("url"):
+                    sources.append({"title": c.get("title") or c.get("url"), "url": c["url"]})
+
+    except Exception as e:
+        logger.debug("Source extraction debug: %s", e)
+
+    return sources
 
 
 class GeminiClientError(Exception):
@@ -56,18 +164,17 @@ class GeminiClientError(Exception):
 
 class GeminiClient:
     """
-    Client for interacting with Google Gemini models hosted on OpenRouter
-    using the official OpenAI-compatible Python SDK.
+    Resilient client for interacting with Google Gemini models hosted on OpenRouter
+    using the official OpenAI-compatible Python SDK with real web search grounding,
+    safe exponential backoff, and multi-tier fallbacks.
     """
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
-        env_model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
-        if env_model in ("google/gemini-2.0-flash-001", "google/gemini-3.7-flash", "google/gemini-3.6-flash", "google/gemini-3.1-flash-lite"):
-            env_model = DEFAULT_MODEL
-        self.model = model or env_model
+        self.model = model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL
         self.enable_web_search = os.getenv("ENABLE_WEB_SEARCH", "true").lower() in ("true", "1", "yes")
 
+        # Direct Google GenerativeAI fallback if GEMINI_API_KEY is provided
         self.gemini_direct_key = os.getenv("GEMINI_API_KEY")
         self._genai_model: Optional[Any] = None
         if self.gemini_direct_key and self.gemini_direct_key.startswith("AIzaSy"):
@@ -76,25 +183,14 @@ class GeminiClient:
                 genai.configure(api_key=self.gemini_direct_key)
                 self._genai_model = genai.GenerativeModel(
                     model_name="gemini-2.0-flash",
-                    system_instruction=SYSTEM_INSTRUCTION
+                    system_instruction=SYSTEM_INSTRUCTION,
                 )
-                logger.info("Configured direct Google Gemini API client (Gemini 2.0 Flash).")
+                logger.info("Configured direct Google Gemini API client fallback.")
             except Exception as e:
                 logger.warning("Failed to initialize direct Google Gemini: %s", e)
 
         self._client: Optional[OpenAI] = None
-        if self.api_key and not self.api_key.startswith("your_"):
-            try:
-                self._client = OpenAI(
-                    base_url=OPENROUTER_BASE_URL,
-                    api_key=self.api_key,
-                    default_headers={
-                        "HTTP-Referer": "https://github.com/cloud-ai-chatbot",
-                        "X-Title": "Cloud-Based AI Chatbot Mini Project",
-                    },
-                )
-            except Exception as e:
-                logger.error("Failed to initialize OpenAI client for OpenRouter: %s", type(e).__name__)
+        self._init_openai_client()
 
     def _get_api_key(self) -> Optional[str]:
         """Dynamically resolve API key from instance or environment."""
@@ -105,67 +201,97 @@ class GeminiClient:
                 return None
         return key
 
+    def _is_google_key(self, key: Optional[str]) -> bool:
+        """Determines if a given API key is a Google AI Studio key."""
+        if not key:
+            return False
+        k = key.strip()
+        if k.startswith("AIzaSy") or k.startswith("AQ.") or not k.startswith("sk-"):
+            return True
+        return False
+
+    def _init_openai_client(self):
+        """Initializes or updates the OpenAI SDK client for OpenRouter or Google AI Studio."""
+        active_key = self._get_api_key()
+        if active_key:
+            try:
+                # Auto-detect Google AI Studio API Key (starts with AIzaSy or AQ. or GEMINI_API_KEY)
+                if self._is_google_key(active_key):
+                    base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+                    self.is_google_direct = True
+                    default_headers = None
+                    logger.info("Auto-detected Google AI Studio key. Pointing to Google Gemini endpoint.")
+                else:
+                    base_url = OPENROUTER_BASE_URL
+                    self.is_google_direct = False
+                    default_headers = {
+                        "HTTP-Referer": "https://github.com/cloud-ai-chatbot",
+                        "X-Title": "Cloud-Based AI Chatbot",
+                    }
+
+                self._client = OpenAI(
+                    base_url=base_url,
+                    api_key=active_key,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                    max_retries=0,  # We handle retries defensively with custom backoff
+                    default_headers=default_headers,
+                )
+            except Exception as e:
+                logger.error("Failed to initialize OpenAI client: %s", e)
+
+    def _get_gemini_direct_client(self) -> Optional[OpenAI]:
+        """Creates an OpenAI client pointing to Google's official Gemini endpoint if GEMINI_API_KEY is available."""
+        key = os.getenv("GEMINI_API_KEY")
+        if not key:
+            candidate = self._get_api_key()
+            if self._is_google_key(candidate):
+                key = candidate
+        if key and self._is_google_key(key):
+            try:
+                return OpenAI(
+                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                    api_key=key.strip(),
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+            except Exception as e:
+                logger.warning("Could not create direct Google Gemini OpenAI client: %s", e)
+        return None
+
     def _get_client(self) -> OpenAI:
         """Lazily initialize or return client with validation."""
         active_key = self._get_api_key()
-        if not active_key and not self._genai_model:
-            # Check if direct GEMINI_API_KEY was added dynamically
-            direct_gemini = os.getenv("GEMINI_API_KEY")
-            if direct_gemini and direct_gemini.strip().strip("\"'").startswith("AIzaSy"):
-                try:
-                    import google.generativeai as genai
-                    genai.configure(api_key=direct_gemini.strip().strip("\"'"))
-                    self._genai_model = genai.GenerativeModel(
-                        model_name="gemini-2.0-flash",
-                        system_instruction=SYSTEM_INSTRUCTION
-                    )
-                    logger.info("Configured direct Google Gemini API client dynamically.")
-                except Exception as e:
-                    logger.warning("Failed to initialize direct Google Gemini dynamically: %s", e)
-
-            if not self._genai_model:
-                raise GeminiClientError(
-                    "OPENROUTER_API_KEY or GEMINI_API_KEY is not configured. Please add a valid API key in Azure App Service Environment Variables (or your .env file locally).",
-                    status_code=401,
-                )
+        if not active_key and not self._genai_model and not self._get_gemini_direct_client():
+            raise GeminiClientError(
+                "OPENROUTER_API_KEY or GEMINI_API_KEY is not configured. Please add your API key in your .env file.",
+                status_code=401,
+            )
 
         if active_key and (self._client is None or getattr(self._client, "api_key", None) != active_key):
-            try:
-                self._client = OpenAI(
-                    base_url=OPENROUTER_BASE_URL,
-                    api_key=active_key,
-                    default_headers={
-                        "HTTP-Referer": "https://github.com/cloud-ai-chatbot",
-                        "X-Title": "Cloud-Based AI Chatbot Mini Project",
-                    },
-                )
-            except Exception as e:
-                if not self._genai_model:
-                    raise GeminiClientError(f"Could not initialize OpenRouter client: {str(e)}", status_code=500)
+            self._init_openai_client()
+
+        if self._client is None and not self._genai_model and not self._get_gemini_direct_client():
+            raise GeminiClientError("Could not initialize AI client.", status_code=500)
 
         return self._client
 
-    def _prepare_request(
+    def is_current_query(self, message: str) -> bool:
+        """Exposes live query detection method."""
+        return is_live_query(message)
+
+    def _prepare_messages(
         self,
         message: str,
         history: Optional[List[Dict[str, str]]] = None,
         file_text_context: Optional[str] = None,
         image_bytes: Optional[bytes] = None,
         image_mime: Optional[str] = None,
-        model: Optional[str] = None,
-        effort: Optional[str] = "medium",
-        max_tokens_override: Optional[int] = None,
-        use_web_search_override: Optional[bool] = None,
-    ):
-        """Prepares client, messages, parameters, and tokens for OpenAI-compatible request."""
-        client = self._get_client()
-
-        # Build OpenAI chat completion messages array
-        messages: List[Dict] = [
+    ) -> List[Dict[str, Any]]:
+        """Constructs chat completion messages list."""
+        messages: List[Dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_INSTRUCTION}
         ]
 
-        # Append past conversation history
+        # Append rolling history
         if history:
             for turn in history:
                 role = "user" if turn.get("role") == "user" else "assistant"
@@ -173,94 +299,100 @@ class GeminiClient:
                 if text:
                     messages.append({"role": role, "content": text})
 
-        # Construct current user message content
-        user_content_parts = []
-
-        # 1. Document Context (if PDF/TXT/DOCX attached)
-        if file_text_context:
-            doc_context_text = (
-                "[ATTACHED DOCUMENT]\n"
-                "The user has uploaded a document for analysis. Use the content below to answer their request:\n\n"
-                f"{file_text_context}\n\n"
-                "[END ATTACHED DOCUMENT]\n\n"
-            )
-            user_content_parts.append({"type": "text", "text": doc_context_text})
-
-        # 2. Multimodal Image (if image file attached)
+        # Construct current user turn
         if image_bytes and image_mime:
             try:
                 b64_img = base64.b64encode(image_bytes).decode("utf-8")
                 image_data_url = f"data:{image_mime};base64,{b64_img}"
-                user_content_parts.append({
+                content_parts: List[Dict[str, Any]] = []
+                if file_text_context:
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"[ATTACHED DOCUMENT]\n{file_text_context}\n[END ATTACHED DOCUMENT]\n\n"
+                    })
+                content_parts.append({
                     "type": "image_url",
-                    "image_url": {
-                        "url": image_data_url,
-                        "detail": "auto",
-                    }
+                    "image_url": {"url": image_data_url, "detail": "auto"}
                 })
+                content_parts.append({"type": "text", "text": message})
+                messages.append({"role": "user", "content": content_parts})
             except Exception as e:
                 logger.error("Error encoding image to base64: %s", e)
                 raise GeminiClientError("Failed to process attached image for AI analysis.", status_code=400)
-
-        # 3. User question / prompt text
-        user_content_parts.append({"type": "text", "text": message})
-
-        # Add current user message to conversation list
-        if not (image_bytes and image_mime):
+        else:
             combined_text = ""
             if file_text_context:
-                combined_text += (
-                    f"[ATTACHED DOCUMENT]\n{file_text_context}\n[END ATTACHED DOCUMENT]\n\n"
-                )
+                combined_text += f"[ATTACHED DOCUMENT]\n{file_text_context}\n[END ATTACHED DOCUMENT]\n\n"
             combined_text += message
             messages.append({"role": "user", "content": combined_text})
-        else:
-            messages.append({"role": "user", "content": user_content_parts})
 
-        # Configure OpenRouter model selection (strictly mapped to verified global endpoints)
-        model_map = {
-            "gemini-3.7-flash": "google/gemini-2.5-flash",
-            "gemini-3.6-flash": "google/gemini-2.5-flash",
-            "gemini-3.1-flash-lite": "google/gemini-2.5-flash-lite",
-            "gemini-2.5-flash": "google/gemini-2.5-flash",
-            "gemini-2.5-flash-lite": "google/gemini-2.5-flash-lite",
-            "google/gemini-3.7-flash": "google/gemini-2.5-flash",
-            "google/gemini-3.6-flash": "google/gemini-2.5-flash",
-            "google/gemini-3.1-flash-lite": "google/gemini-2.5-flash-lite",
-            "google/gemini-2.5-flash": "google/gemini-2.5-flash",
-            "google/gemini-2.5-flash-lite": "google/gemini-2.5-flash-lite",
-            "google/gemini-2.0-flash-001": "google/gemini-2.5-flash",
-            "google/gemini-2.0-flash-lite-001": "google/gemini-2.5-flash-lite",
-            "google/gemini-flash-1.5": "google/gemini-2.5-flash",
-        }
-        raw_model = model or self.model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL
-        model_to_use = model_map.get(raw_model, raw_model)
-        if not model_to_use or model_to_use in ("google/gemini-2.0-flash-001", "google/gemini-3.7-flash", "google/gemini-3.6-flash", "google/gemini-3.1-flash-lite"):
-            model_to_use = "google/gemini-2.5-flash"
-        extra_body = {}
+        return messages
 
-        # Configure Reasoning Effort (low, medium, high)
-        valid_efforts = ("low", "medium", "high")
-        effort_level = effort.lower() if (effort and effort.lower() in valid_efforts) else "medium"
-        extra_body["reasoning"] = {"effort": effort_level}
-        
-        # SMART WEB SEARCH: Only enable web search plugin for text queries when NO document or image is attached.
+    def _resolve_model(self, requested_model: Optional[str]) -> str:
+        """Resolves model string adhering to configured defaults."""
+        raw = requested_model or self.model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL
+        raw = raw.strip()
+        if getattr(self, "is_google_direct", False):
+            # Google AI Studio expects model names without "google/" prefix
+            if raw.startswith("google/"):
+                raw = raw[7:]
+            if raw == "gemini-3.7-flash":
+                raw = "gemini-2.5-flash"
+            return raw
+        if raw in ("google/gemini-2.0-flash-001", "gemini-2.0-flash-001"):
+            return "google/gemini-2.5-flash"
+        return raw
+
+    def _determine_web_search(
+        self,
+        message: str,
+        use_web_search_override: Optional[bool],
+        file_text_context: Optional[str],
+        image_bytes: Optional[bytes],
+    ) -> bool:
+        """
+        Determines whether web search grounding should be enabled.
+        - If user uploaded a document or image, prefer answering directly from file content unless explicitly forced.
+        - If explicit override given, honor it.
+        - If query is detected as a live/current question, automatically enable.
+        """
         if use_web_search_override is not None:
-            use_web_search = use_web_search_override
-        else:
-            use_web_search = self.enable_web_search and not file_text_context and not image_bytes
+            return bool(use_web_search_override)
 
-        if use_web_search:
-            extra_body["plugins"] = [{"id": "web"}]
+        if file_text_context or image_bytes:
+            return False
 
-        # Token cap tailored to effort level or override
-        if max_tokens_override:
-            max_tokens = max_tokens_override
-        else:
-            base_tokens = {"low": 500, "medium": 700, "high": 850}.get(effort_level, 700)
-            max_tokens = min(base_tokens, 700) if (file_text_context or image_bytes) else base_tokens
+        if not self.enable_web_search:
+            return False
 
-        return client, model_to_use, messages, extra_body, max_tokens, effort_level, use_web_search
+        return is_live_query(message)
+
+    def _call_openrouter(
+        self,
+        client: OpenAI,
+        model_to_use: str,
+        messages: List[Dict[str, Any]],
+        max_tokens: int,
+        effort_level: str,
+        enable_web_plugin: bool,
+    ) -> Any:
+        """Executes a single chat completion request with OpenRouter or Google AI Studio."""
+        extra_body: Dict[str, Any] = {}
+
+        if not getattr(self, "is_google_direct", False):
+            if effort_level in ("low", "medium", "high"):
+                extra_body["reasoning"] = {"effort": effort_level}
+
+            if enable_web_plugin:
+                extra_body["plugins"] = [{"id": "web"}]
+
+        return client.chat.completions.create(
+            model=model_to_use,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=max_tokens,
+            extra_body=extra_body if extra_body else None,
+        )
 
     def generate_reply(
         self,
@@ -275,240 +407,332 @@ class GeminiClient:
         use_web_search_override: Optional[bool] = None,
     ) -> str:
         """
-        Generates an AI response given a user message, optional conversation history,
-        optional document context, optional image bytes, optional model override,
-        and optional reasoning effort ("low", "medium", "high").
-
-        Returns:
-            str: AI response text in Markdown format.
+        Generates an AI response for the user request with real web search grounding,
+        retry handling, output sanitization, and graceful multi-tier fallbacks.
         """
-        client, model_to_use, messages, extra_body, max_tokens, effort_level, use_web_search = self._prepare_request(
+        client = self._get_client()
+        model_to_use = self._resolve_model(model)
+        messages = self._prepare_messages(
             message=message,
             history=history,
             file_text_context=file_text_context,
             image_bytes=image_bytes,
             image_mime=image_mime,
-            model=model,
-            effort=effort,
-            max_tokens_override=max_tokens_override,
-            use_web_search_override=use_web_search_override,
         )
 
-        try:
-            logger.info("Sending request to OpenRouter (model: %s, effort: %s, web_search: %s, max_tokens: %d)", model_to_use, effort_level, use_web_search, max_tokens)
-            
-            response = cast(
-                Any,
-                client.chat.completions.create(
-                    model=model_to_use,
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=max_tokens,
-                    extra_body=extra_body if extra_body else None,
+        should_web_search = self._determine_web_search(
+            message=message,
+            use_web_search_override=use_web_search_override,
+            file_text_context=file_text_context,
+            image_bytes=image_bytes,
+        )
+
+        valid_efforts = ("low", "medium", "high")
+        effort_level = effort.lower() if (effort and effort.lower() in valid_efforts) else "medium"
+
+        if max_tokens_override:
+            max_tokens = max_tokens_override
+        else:
+            base_tokens = {"low": 600, "medium": 1000, "high": 1500}.get(effort_level, 1000)
+            max_tokens = base_tokens
+
+        logger.info(
+            "Generating reply via OpenRouter (model=%s, web_search=%s, effort=%s, max_tokens=%d)",
+            model_to_use, should_web_search, effort_level, max_tokens,
+        )
+
+        # -----------------------------------------------------------------------
+        # Step 1: Attempt web-grounded or standard request with retry backoff
+        # -----------------------------------------------------------------------
+        web_search_succeeded = False
+        attempt_web_plugin = should_web_search
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = cast(
+                    Any,
+                    self._call_openrouter(
+                        client=client,
+                        model_to_use=model_to_use,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        effort_level=effort_level,
+                        enable_web_plugin=attempt_web_plugin,
+                    )
                 )
-            )
 
-            if not response or not response.choices:
-                raise GeminiClientError("The AI model returned an empty response. Please try again.", status_code=502)
+                if response and response.choices:
+                    choice_msg = response.choices[0].message
+                    reply_text = getattr(choice_msg, "content", None)
+                    if not reply_text and hasattr(choice_msg, "reasoning"):
+                        reply_text = choice_msg.reasoning
 
-            choice_msg = response.choices[0].message
-            reply_text = choice_msg.content
+                    clean_text = clean_ai_output(reply_text)
+                    if clean_text:
+                        if attempt_web_plugin:
+                            web_search_succeeded = True
 
-            # Handle models where response content is inside reasoning or message attributes
-            if not reply_text:
-                if hasattr(choice_msg, "reasoning") and choice_msg.reasoning:
-                    reply_text = choice_msg.reasoning
-                else:
-                    raise GeminiClientError("The AI returned no text content.", status_code=502)
+                        # Extract citations / sources if present
+                        sources = extract_sources_from_response(response)
+                        final_text = clean_text
 
-            return reply_text.strip()
+                        if sources:
+                            source_links = [f"- [{s['title']}]({s['url']})" for s in sources]
+                            final_text += "\n\n### 🌐 Sources\n" + "\n".join(source_links)
 
-        except AuthenticationError as e:
-            logger.error("OpenRouter Authentication Error (401)")
-            raise GeminiClientError(
-                "Invalid or expired OpenRouter API Key (401). Please check OPENROUTER_API_KEY in your .env file.",
-                status_code=401,
-            ) from e
+                        return final_text
+                    elif attempt_web_plugin:
+                        # Raw tool call emitted without answer, fallback to non-plugin call
+                        logger.info("Web plugin returned raw tool tokens without answer. Falling back to non-web request...")
+                        attempt_web_plugin = False
+                        continue
 
-        except RateLimitError as e:
-            logger.warning("OpenRouter Rate Limit Exceeded (429)")
-            raise GeminiClientError(
-                "AI rate limit or credit quota exceeded (429). Please wait a moment or check your OpenRouter account balance at openrouter.ai/settings/credits.",
-                status_code=429,
-            ) from e
+            except AuthenticationError as auth_err:
+                provider_name = "Google AI Studio" if getattr(self, "is_google_direct", False) else "OpenRouter"
+                var_name = "GEMINI_API_KEY" if getattr(self, "is_google_direct", False) else "OPENROUTER_API_KEY"
+                logger.error("%s Authentication Error (401)", provider_name)
+                raise GeminiClientError(
+                    f"Invalid or expired {provider_name} API Key (401). Please verify {var_name} in your .env file or Cloud/Azure settings.",
+                    status_code=401,
+                ) from auth_err
 
-        except (NotFoundError, APIStatusError) as e:
-            status_code = getattr(e, "status_code", 502)
-            err_str = str(e).lower()
-            logger.warning("OpenRouter error (%s): %s. Attempting global resilient fallback...", status_code, e)
-            
-            # Universal fallback models verified on OpenRouter
-            fallbacks = [
-                "google/gemini-2.5-flash",
-                "google/gemini-2.5-flash-lite",
-                "meta-llama/llama-3.3-70b-instruct",
-                "nvidia/nemotron-3.5-lightning:free",
-            ]
-            for fb_m in fallbacks:
-                if fb_m != model_to_use:
+            except RateLimitError as rl_err:
+                if attempt < MAX_RETRIES:
+                    wait_time = 1.0 * (2 ** attempt)
+                    logger.warning("Rate limited (429). Backing off for %.1fs (attempt %d/%d)...", wait_time, attempt + 1, MAX_RETRIES)
+                    time.sleep(wait_time)
+                    continue
+                logger.error("OpenRouter Rate Limit Exceeded (429)")
+                raise GeminiClientError(
+                    "OpenRouter rate limit or credit quota exceeded (429). Please wait a moment or check your credits at openrouter.ai/settings/credits.",
+                    status_code=429,
+                ) from rl_err
+
+            except (APITimeoutError, APIConnectionError) as net_err:
+                if attempt < MAX_RETRIES:
+                    wait_time = 1.0 * (2 ** attempt)
+                    logger.warning("Connection/Timeout error (%s). Retrying in %.1fs...", net_err, wait_time)
+                    time.sleep(wait_time)
+                    continue
+                logger.error("Network connection error to OpenRouter: %s", net_err)
+                if attempt_web_plugin:
+                    logger.info("Web search request timed out. Falling back to non-web model request...")
+                    attempt_web_plugin = False
+                    continue
+                raise GeminiClientError(
+                    "Connection to OpenRouter timed out or failed. Please check your internet connection.",
+                    status_code=504 if isinstance(net_err, APITimeoutError) else 503,
+                ) from net_err
+
+            except (NotFoundError, APIStatusError) as status_err:
+                status_code = getattr(status_err, "status_code", 500)
+                err_str = str(status_err).lower()
+                logger.warning("OpenRouter API error (%d): %s", status_code, status_err)
+
+                # If web search failed due to budget or plugin, fall back to standard model call immediately
+                if attempt_web_plugin and (status_code in (400, 402, 404, 500, 502, 503) or "plugin" in err_str or "web" in err_str or "afford" in err_str):
+                    logger.info("Web search plugin call failed (%s). Retrying standard model request...", status_err)
+                    attempt_web_plugin = False
+                    continue
+
+                # 402 Budget limit handling
+                if status_code == 402 or "credit" in err_str or "afford" in err_str:
+                    return self._handle_budget_fallback(client, messages, max_tokens, file_text_context, should_web_search)
+
+                # Transient 500/502/503 errors -> retry with backoff
+                if status_code in (500, 502, 503, 504) and attempt < MAX_RETRIES:
+                    wait_time = 1.0 * (2 ** attempt)
+                    logger.warning("Server status error (%d). Retrying in %.1fs...", status_code, wait_time)
+                    time.sleep(wait_time)
+                    continue
+
+                break
+
+            except Exception as e:
+                logger.exception("Unexpected error during AI generation attempt %d: %s", attempt, e)
+                if attempt_web_plugin:
+                    attempt_web_plugin = False
+                    continue
+                if attempt < MAX_RETRIES:
+                    time.sleep(1.0)
+                    continue
+                break
+
+        # -----------------------------------------------------------------------
+        # Step 2: Resilient Fallback Models
+        # -----------------------------------------------------------------------
+        fallback_models = [
+            "google/gemini-2.5-flash",
+            "google/gemini-3.7-flash",
+            "google/gemini-3.6-flash",
+            "google/gemini-3.1-flash-lite",
+            "inclusionai/ling-3.0-flash-vl:free",
+            "dots-studio/dots-3-note-preview:free",
+            "nex-agi/nex-n2.5-mini:free",
+            "nex-agi/nex-n2.5-pro:free",
+        ]
+
+        for fb_model in fallback_models:
+            if fb_model == model_to_use:
+                continue
+            try:
+                logger.info("Attempting fallback model: %s", fb_model)
+                fb_resp = cast(
+                    Any,
+                    client.chat.completions.create(
+                        model=fb_model,
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=min(max_tokens, 700),
+                    )
+                )
+                if fb_resp and fb_resp.choices:
+                    content = (
+                        getattr(fb_resp.choices[0].message, "content", None)
+                        or getattr(fb_resp.choices[0].message, "reasoning", None)
+                    )
+                    clean_content = clean_ai_output(content)
+                    if clean_content:
+                        result = clean_content
+                        if should_web_search and not web_search_succeeded:
+                            result += "\n\n> ℹ️ *Note: Live web search grounding was temporarily unavailable from the provider. This answer is based on internal model knowledge.*"
+                        return result
+            except Exception as fb_err:
+                logger.warning("Fallback model %s failed: %s", fb_model, fb_err)
+
+        # -----------------------------------------------------------------------
+        # Step 3: Direct Google Gemini API fallback if configured
+        # -----------------------------------------------------------------------
+        if self._genai_model:
+            try:
+                logger.info("Attempting direct Google Gemini API fallback...")
+                prompt_content = []
+                if file_text_context:
+                    prompt_content.append(f"[ATTACHED DOCUMENT]:\n{file_text_context}\n")
+                prompt_content.append(message)
+                res = self._genai_model.generate_content(prompt_content)
+                if res and res.text:
+                    ans = clean_ai_output(res.text)
+                    if ans:
+                        if should_web_search:
+                            ans += "\n\n> ℹ️ *Note: Live web search grounding was temporarily unavailable from the provider. This answer is based on internal model knowledge.*"
+                        return ans
+            except Exception as g_err:
+                logger.warning("Google Gemini direct fallback failed: %s", g_err)
+
+        raise GeminiClientError(
+            f"The AI service could not complete the request with model '{model_to_use}'. Please check your OpenRouter configuration or account status.",
+            status_code=502,
+        )
+
+    def _handle_budget_fallback(
+        self,
+        client: OpenAI,
+        messages: List[Dict[str, Any]],
+        max_tokens: int,
+        file_text_context: Optional[str],
+        should_web_search: bool = False,
+    ) -> str:
+        """
+        Handles low credit state by routing through direct Gemini API, clean free tier models,
+        or returning clear user guidance without crashing.
+        """
+        # 1. Try direct Google Gemini API if configured
+        direct_client = self._get_gemini_direct_client()
+        if direct_client:
+            try:
+                logger.info("Attempting direct Google Gemini API for budget fallback...")
+                for g_mod in ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"):
                     try:
-                        logger.info("Attempting resilient fallback model: %s", fb_m)
-                        fb_resp = cast(
+                        g_resp = cast(
                             Any,
-                            client.chat.completions.create(
-                                model=fb_m,
+                            direct_client.chat.completions.create(
+                                model=g_mod,
                                 messages=messages,
                                 temperature=0.7,
                                 max_tokens=max_tokens,
                             )
                         )
-                        if fb_resp and fb_resp.choices:
-                            txt = (
-                                getattr(fb_resp.choices[0].message, "content", None)
-                                or getattr(fb_resp.choices[0].message, "reasoning", None)
-                            )
-                            if txt and txt.strip():
-                                return txt.strip()
-                    except Exception as fb_err:
-                        logger.warning("Resilient fallback %s failed: %s", fb_m, fb_err)
+                        if g_resp and g_resp.choices:
+                            content = getattr(g_resp.choices[0].message, "content", None)
+                            ans = clean_ai_output(content)
+                            if ans:
+                                return ans
+                    except Exception as mod_err:
+                        logger.debug("Direct Gemini model %s attempt: %s", g_mod, mod_err)
+            except Exception as g_err:
+                logger.warning("Direct Google Gemini OpenAI fallback failed: %s", g_err)
 
-            if isinstance(e, NotFoundError) or status_code == 404:
-                raise GeminiClientError(
-                    f"The AI model '{model_to_use}' was not found or is unavailable on OpenRouter (404). Check OPENROUTER_MODEL in .env.",
-                    status_code=404,
-                ) from e
+        if self._genai_model:
+            try:
+                logger.info("Attempting direct Google GenerativeAI fallback...")
+                prompt_text = "\n".join(
+                    m.get("content", "") if isinstance(m.get("content"), str) else str(m.get("content"))
+                    for m in messages if m.get("role") != "system"
+                )
+                res = self._genai_model.generate_content(prompt_text)
+                if res and res.text:
+                    ans = clean_ai_output(res.text)
+                    if ans:
+                        return ans
+            except Exception as g_err:
+                logger.warning("Direct Gemini fallback failed: %s", g_err)
 
-        except APIConnectionError as e:
-            logger.error("OpenRouter API Connection Error: %s", e)
-            raise GeminiClientError(
-                "Could not connect to OpenRouter servers. Please verify your internet connection and network settings.",
-                status_code=503,
-            ) from e
-
-        except APIStatusError as e:
-            status_code = getattr(e, "status_code", 502)
-            err_str = str(e).lower()
-            if status_code == 402 or "credits" in err_str or "in_flight" in err_str or "afford" in err_str:
-                logger.warning("OpenRouter Credit/Budget Limit (402): %s. Attempting self-healing recovery...", e)
-                
-                # 1. Check if OpenRouter specified exact affordable tokens
-                import re
-                afford_match = re.search(r"can only afford (\d+)", str(e))
-                if afford_match:
-                    affordable = int(afford_match.group(1))
-                    reduced_tokens = max(10, affordable - 1)
-                else:
-                    reduced_tokens = 50
-                
+        # 2. Try proven clean conversational free fallback models
+        logger.info("Attempting clean conversational free fallback models...")
+        clean_free_models = [
+            "inclusionai/ling-3.0-flash-vl:free",
+            "dots-studio/dots-3-note-preview:free",
+            "nex-agi/nex-n2.5-mini:free",
+            "nex-agi/nex-n2.5-pro:free",
+            "nvidia/nemotron-3.5-lightning:free",
+        ]
+        for fm in clean_free_models:
+            for attempt in range(2):
                 try:
-                    logger.info("Retrying with affordable max_tokens=%d without web plugin...", reduced_tokens)
-                    retry_resp = cast(
+                    fb_resp = cast(
                         Any,
                         client.chat.completions.create(
-                            model=model_to_use,
+                            model=fm,
                             messages=messages,
                             temperature=0.7,
-                            max_tokens=reduced_tokens,
+                            max_tokens=min(max_tokens, 600),
                         )
                     )
-                    if retry_resp and retry_resp.choices and retry_resp.choices[0].message.content:
-                        return retry_resp.choices[0].message.content.strip()
-                except Exception as retry_err:
-                    logger.warning("Budget reduction retry failed: %s", retry_err)
-
-                # 2. Fallback to free OpenRouter models if credits are completely exhausted (skip for documents to avoid 15s delay)
-                if not (image_bytes and image_mime) and not file_text_context:
-                    free_models = [
-                        "nvidia/nemotron-3.5-lightning:free",
-                        "liquid/lfm-2.5-2.6b:free",
-                    ]
-                    for fallback_model in free_models:
-                        try:
-                            logger.info("Attempting free fallback model: %s", fallback_model)
-                            fb_resp = cast(
-                                Any,
-                                client.chat.completions.create(
-                                    model=fallback_model,
-                                    messages=messages,
-                                    temperature=0.7,
-                                    max_tokens=350,
-                                )
-                            )
-                            if fb_resp and fb_resp.choices:
-                                raw_text = (
-                                    getattr(fb_resp.choices[0].message, "content", None)
-                                    or getattr(fb_resp.choices[0].message, "reasoning", None)
-                                )
-                                if raw_text and raw_text.strip():
-                                    return raw_text.strip()
-                        except Exception as fb_err:
-                            logger.warning("Fallback model %s failed: %s", fallback_model, fb_err)
-
-                # Try Google Gemini direct API if configured
-                if self._genai_model:
-                    try:
-                        logger.info("Falling back to direct Google Gemini API...")
-                        prompt_content = []
-                        if file_text_context:
-                            prompt_content.append(f"[ATTACHED DOCUMENT CONTENT]:\n{file_text_context}")
-                        prompt_content.append(f"User Request: {message}")
-                        res = self._genai_model.generate_content(prompt_content)
-                        if res and res.text:
-                            return res.text.strip()
-                    except Exception as g_err:
-                        logger.warning("Google Gemini direct fallback failed: %s", g_err)
-
-                raise GeminiClientError(
-                    "OpenRouter credit budget limit reached (402). Your account balance is low. Please wait a moment for in-flight requests to settle, or top up credits at openrouter.ai/settings/credits.",
-                    status_code=402,
-                ) from e
-
-            if status_code == 403 or "region" in err_str or "geo" in err_str or "routing" in err_str:
-                logger.warning("OpenRouter regional/geo restriction error (%d): %s. Attempting global fallback models...", status_code, e)
-                geo_fallbacks = [
-                    "meta-llama/llama-3.3-70b-instruct",
-                    "mistralai/mistral-small-24b-instruct-2501",
-                    "deepseek/deepseek-chat",
-                    "google/gemini-2.0-flash-001",
-                    "nvidia/nemotron-3.5-lightning:free",
-                ]
-                for alt_model in geo_fallbacks:
-                    try:
-                        logger.info("Attempting geo-fallback model: %s", alt_model)
-                        alt_resp = cast(
-                            Any,
-                            client.chat.completions.create(
-                                model=alt_model,
-                                messages=messages,
-                                temperature=0.7,
-                                max_tokens=max_tokens,
-                            )
+                    if fb_resp and fb_resp.choices:
+                        raw_txt = (
+                            getattr(fb_resp.choices[0].message, "content", None)
+                            or getattr(fb_resp.choices[0].message, "reasoning", None)
                         )
-                        if alt_resp and alt_resp.choices:
-                            alt_text = (
-                                getattr(alt_resp.choices[0].message, "content", None)
-                                or getattr(alt_resp.choices[0].message, "reasoning", None)
-                            )
-                            if alt_text and alt_text.strip():
-                                return alt_text.strip()
-                    except Exception as alt_err:
-                        logger.warning("Geo-fallback model %s failed: %s", alt_model, alt_err)
+                        clean_txt = clean_ai_output(raw_txt)
+                        if clean_txt:
+                            if should_web_search:
+                                clean_txt += "\n\n> ℹ️ *Note: Live web search grounding was temporarily unavailable from the provider. This answer is based on internal model knowledge.*"
+                            return clean_txt
+                except Exception as e:
+                    err_s = str(e).lower()
+                    if "429" in err_s and attempt == 0:
+                        time.sleep(0.6)
+                        continue
+                    logger.warning("Free model fallback %s failed: %s", fm, e)
+                    break
 
-            logger.error("OpenRouter API Status Error (%d): %s", status_code, getattr(e, "message", str(e)))
-            raise GeminiClientError(
-                f"OpenRouter service error ({status_code}): {getattr(e, 'message', str(e))}",
-                status_code=status_code,
-            ) from e
+        # 3. If file context was present, provide structured document report
+        if file_text_context:
+            user_msg = messages[-1].get("content", "") if messages else ""
+            if isinstance(user_msg, list):
+                user_msg = "Summarize document"
+            return generate_document_analysis_report("Uploaded Document", file_text_context, str(user_msg))
 
-        except GeminiClientError:
-            raise
-
-        except Exception as e:
-            logger.exception("Unexpected error in OpenRouter AI client")
-            raise GeminiClientError(
-                f"Unexpected error communicating with AI: {str(e)}",
-                status_code=500,
-            ) from e
+        # 4. Return user-friendly guidance notice
+        return (
+            "⚠️ **OpenRouter Credit Balance Notice**\n\n"
+            "Your OpenRouter API account currently has zero remaining token credits (Status 402).\n\n"
+            "**How to continue chatting:**\n"
+            "1. **Option 1 (Free Gemini Key)**: Get a 100% free Gemini API key with 1,500 requests/day at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and add `GEMINI_API_KEY=AIzaSy...` in your `.env` file.\n"
+            "2. **Option 2 (Top Up Credits)**: Add credits to your OpenRouter account at [openrouter.ai/settings/credits](https://openrouter.ai/settings/credits).\n"
+            "3. **Option 3**: Wait a brief moment and retry as public free models become available."
+        )
 
     def generate_reply_stream(
         self,
@@ -519,40 +743,62 @@ class GeminiClient:
         image_mime: Optional[str] = None,
         model: Optional[str] = None,
         effort: Optional[str] = "medium",
-    ):
+        use_web_search_override: Optional[bool] = None,
+    ) -> Generator[str, None, None]:
         """
-        Streams AI response chunks in real-time.
-        Yields:
-            str: incremental response delta text chunks.
+        Streams AI response chunks in real-time, filtering raw tool tokens.
         """
-        client, model_to_use, messages, extra_body, max_tokens, effort_level, use_web_search = self._prepare_request(
+        client = self._get_client()
+        model_to_use = self._resolve_model(model)
+        messages = self._prepare_messages(
             message=message,
             history=history,
             file_text_context=file_text_context,
             image_bytes=image_bytes,
             image_mime=image_mime,
-            model=model,
-            effort=effort,
         )
 
+        should_web_search = self._determine_web_search(
+            message=message,
+            use_web_search_override=use_web_search_override,
+            file_text_context=file_text_context,
+            image_bytes=image_bytes,
+        )
+
+        valid_efforts = ("low", "medium", "high")
+        effort_level = effort.lower() if (effort and effort.lower() in valid_efforts) else "medium"
+        base_tokens = {"low": 600, "medium": 1000, "high": 1500}.get(effort_level, 1000)
+
+        extra_body: Dict[str, Any] = {}
+        if not getattr(self, "is_google_direct", False):
+            if effort_level in ("low", "medium", "high"):
+                extra_body["reasoning"] = {"effort": effort_level}
+            if should_web_search:
+                extra_body["plugins"] = [{"id": "web"}]
+
+        logger.info(
+            "Streaming via %s (model=%s, web_search=%s, effort=%s)",
+            "Google AI Studio" if getattr(self, "is_google_direct", False) else "OpenRouter",
+            model_to_use,
+            should_web_search,
+            effort_level,
+        )
+
+        has_yielded = False
+        raw_accumulated = ""
         try:
-            logger.info(
-                "Sending streaming request to OpenRouter (model: %s, effort: %s, web_search: %s, max_tokens: %d)",
-                model_to_use, effort_level, use_web_search, max_tokens
-            )
             stream_response = cast(
                 Any,
                 client.chat.completions.create(
                     model=model_to_use,
                     messages=messages,
                     temperature=0.7,
-                    max_tokens=max_tokens,
+                    max_tokens=base_tokens,
                     extra_body=extra_body if extra_body else None,
                     stream=True,
                 )
             )
 
-            has_yielded = False
             for chunk in stream_response:
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
@@ -560,40 +806,25 @@ class GeminiClient:
                     if not content and hasattr(delta, "reasoning"):
                         content = getattr(delta, "reasoning", "") or ""
                     if content:
-                        has_yielded = True
-                        yield content
+                        raw_accumulated += content
+                        # If raw tool call token is being emitted, don't yield it
+                        if "<|tool_call_" not in content and "[google(" not in content:
+                            has_yielded = True
+                            yield content
 
-            if not has_yielded:
-                # If stream returned no content, try single call fallback
-                reply = self.generate_reply(
-                    message=message,
-                    history=history,
-                    file_text_context=file_text_context,
-                    image_bytes=image_bytes,
-                    image_mime=image_mime,
-                    model=model,
-                    effort=effort,
-                )
-                yield reply
+        except Exception as stream_err:
+            logger.warning("Streaming call failed: %s. Falling back to generate_reply...", stream_err)
 
-        except GeminiClientError:
-            raise
-        except Exception as e:
-            logger.warning("Streaming encountered an issue: %s. Trying direct reply fallback...", e)
-            try:
-                reply = self.generate_reply(
-                    message=message,
-                    history=history,
-                    file_text_context=file_text_context,
-                    image_bytes=image_bytes,
-                    image_mime=image_mime,
-                    model=model,
-                    effort=effort,
-                )
-                if reply and reply.strip():
-                    yield reply
-            except Exception as fb_err:
-                if isinstance(fb_err, GeminiClientError):
-                    raise fb_err
-                status_code = getattr(e, "status_code", 500)
-                raise GeminiClientError(f"Streaming error: {str(e)}", status_code=status_code) from fb_err
+        # If stream yielded raw tool tokens or failed, fallback to clean generate_reply
+        if not has_yielded or "<|tool_call_" in raw_accumulated:
+            reply = self.generate_reply(
+                message=message,
+                history=history,
+                file_text_context=file_text_context,
+                image_bytes=image_bytes,
+                image_mime=image_mime,
+                model=model,
+                effort=effort,
+                use_web_search_override=use_web_search_override,
+            )
+            yield reply
