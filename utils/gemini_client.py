@@ -217,20 +217,24 @@ class GeminiClient:
             return True
         return False
 
+    @property
+    def is_google_direct(self) -> bool:
+        """Determines if the active client is using Google AI Studio."""
+        active_key = self._get_api_key()
+        return self._is_google_key(active_key)
+
     def _init_openai_client(self):
         """Initializes or updates the OpenAI SDK client for OpenRouter or Google AI Studio."""
         active_key = self._get_api_key()
         if active_key:
             try:
                 # Auto-detect Google AI Studio API Key (starts with AIzaSy or AQ. or GEMINI_API_KEY)
-                if self._is_google_key(active_key):
+                if self.is_google_direct:
                     base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-                    self.is_google_direct = True
                     default_headers = None
                     logger.info("Auto-detected Google AI Studio key. Pointing to Google Gemini endpoint.")
                 else:
                     base_url = OPENROUTER_BASE_URL
-                    self.is_google_direct = False
                     default_headers = {
                         "HTTP-Referer": "https://github.com/cloud-ai-chatbot",
                         "X-Title": "Cloud-Based AI Chatbot",
@@ -269,11 +273,13 @@ class GeminiClient:
         active_key = self._get_api_key()
         if not active_key and not self._genai_model and not self._get_gemini_direct_client():
             raise GeminiClientError(
-                "OPENROUTER_API_KEY or GEMINI_API_KEY is not configured. Please add your API key in your .env file.",
+                "GEMINI_API_KEY or OPENROUTER_API_KEY is not configured. Please add your API key in your .env file or Azure settings.",
                 status_code=401,
             )
 
-        if active_key and (self._client is None or getattr(self._client, "api_key", None) != active_key):
+        expected_base = "https://generativelanguage.googleapis.com/v1beta/openai/" if self.is_google_direct else OPENROUTER_BASE_URL
+        curr_base = str(getattr(self._client, "base_url", "")) if self._client else ""
+        if active_key and (self._client is None or getattr(self._client, "api_key", None) != active_key or expected_base not in curr_base):
             self._init_openai_client()
 
         if self._client is None and not self._genai_model and not self._get_gemini_direct_client():
@@ -360,10 +366,10 @@ class GeminiClient:
     ) -> bool:
         """
         Determines whether web search grounding should be enabled.
-        - If user uploaded a document or image, prefer answering directly from file content unless explicitly forced.
-        - If explicit override given, honor it.
-        - If query is detected as a live/current question, automatically enable.
         """
+        if self.is_google_direct:
+            return False
+
         if use_web_search_override is not None:
             return bool(use_web_search_override)
 
@@ -455,6 +461,8 @@ class GeminiClient:
         web_search_succeeded = False
         attempt_web_plugin = should_web_search
 
+        last_error_str = None
+
         for attempt in range(MAX_RETRIES + 1):
             try:
                 response = cast(
@@ -496,8 +504,8 @@ class GeminiClient:
                         continue
 
             except AuthenticationError as auth_err:
-                provider_name = "Google AI Studio" if getattr(self, "is_google_direct", False) else "OpenRouter"
-                var_name = "GEMINI_API_KEY" if getattr(self, "is_google_direct", False) else "OPENROUTER_API_KEY"
+                provider_name = "Google AI Studio" if self.is_google_direct else "OpenRouter"
+                var_name = "GEMINI_API_KEY" if self.is_google_direct else "OPENROUTER_API_KEY"
                 logger.error("%s Authentication Error (401)", provider_name)
                 raise GeminiClientError(
                     f"Invalid or expired {provider_name} API Key (401). Please verify {var_name} in your .env file or Cloud/Azure settings.",
@@ -505,37 +513,40 @@ class GeminiClient:
                 ) from auth_err
 
             except RateLimitError as rl_err:
+                last_error_str = f"RateLimitError: {rl_err}"
                 if attempt < MAX_RETRIES:
                     wait_time = 1.0 * (2 ** attempt)
                     logger.warning("Rate limited (429). Backing off for %.1fs (attempt %d/%d)...", wait_time, attempt + 1, MAX_RETRIES)
                     time.sleep(wait_time)
                     continue
-                logger.error("OpenRouter Rate Limit Exceeded (429)")
+                logger.error("Rate Limit Exceeded (429)")
                 raise GeminiClientError(
-                    "OpenRouter rate limit or credit quota exceeded (429). Please wait a moment or check your credits at openrouter.ai/settings/credits.",
+                    f"API rate limit or credit quota exceeded (429): {rl_err}",
                     status_code=429,
                 ) from rl_err
 
             except (APITimeoutError, APIConnectionError) as net_err:
+                last_error_str = f"NetworkError: {net_err}"
                 if attempt < MAX_RETRIES:
                     wait_time = 1.0 * (2 ** attempt)
                     logger.warning("Connection/Timeout error (%s). Retrying in %.1fs...", net_err, wait_time)
                     time.sleep(wait_time)
                     continue
-                logger.error("Network connection error to OpenRouter: %s", net_err)
+                logger.error("Network connection error: %s", net_err)
                 if attempt_web_plugin:
                     logger.info("Web search request timed out. Falling back to non-web model request...")
                     attempt_web_plugin = False
                     continue
                 raise GeminiClientError(
-                    "Connection to OpenRouter timed out or failed. Please check your internet connection.",
+                    f"Connection to AI provider timed out or failed ({net_err}).",
                     status_code=504 if isinstance(net_err, APITimeoutError) else 503,
                 ) from net_err
 
             except (NotFoundError, APIStatusError) as status_err:
+                last_error_str = f"APIStatusError({getattr(status_err, 'status_code', 500)}): {status_err}"
                 status_code = getattr(status_err, "status_code", 500)
                 err_str = str(status_err).lower()
-                logger.warning("OpenRouter API error (%d): %s", status_code, status_err)
+                logger.warning("AI Provider API error (%d): %s", status_code, status_err)
 
                 # If web search failed due to budget or plugin, fall back to standard model call immediately
                 if attempt_web_plugin and (status_code in (400, 402, 404, 500, 502, 503) or "plugin" in err_str or "web" in err_str or "afford" in err_str):
@@ -557,6 +568,7 @@ class GeminiClient:
                 break
 
             except Exception as e:
+                last_error_str = f"{type(e).__name__}: {str(e)}"
                 logger.exception("Unexpected error during AI generation attempt %d: %s", attempt, e)
                 if attempt_web_plugin:
                     attempt_web_plugin = False
@@ -569,12 +581,9 @@ class GeminiClient:
         # -----------------------------------------------------------------------
         # Step 2: Resilient Fallback Models
         # -----------------------------------------------------------------------
-        if getattr(self, "is_google_direct", False):
+        if self.is_google_direct:
             fallback_models = [
                 "gemini-2.5-flash",
-                "gemini-2.0-flash",
-                "gemini-1.5-flash",
-                "gemini-1.5-pro",
             ]
         else:
             fallback_models = [
@@ -616,28 +625,8 @@ class GeminiClient:
             except Exception as fb_err:
                 logger.warning("Fallback model %s failed: %s", fb_model, fb_err)
 
-        # -----------------------------------------------------------------------
-        # Step 3: Direct Google Gemini API fallback if configured
-        # -----------------------------------------------------------------------
-        if self._genai_model:
-            try:
-                logger.info("Attempting direct Google Gemini API fallback...")
-                prompt_content = []
-                if file_text_context:
-                    prompt_content.append(f"[ATTACHED DOCUMENT]:\n{file_text_context}\n")
-                prompt_content.append(message)
-                res = self._genai_model.generate_content(prompt_content)
-                if res and res.text:
-                    ans = clean_ai_output(res.text)
-                    if ans:
-                        if should_web_search:
-                            ans += "\n\n> ℹ️ *Note: Live web search grounding was temporarily unavailable from the provider. This answer is based on internal model knowledge.*"
-                        return ans
-            except Exception as g_err:
-                logger.warning("Google Gemini direct fallback failed: %s", g_err)
-
         raise GeminiClientError(
-            f"The AI service could not complete the request with model '{model_to_use}'. Please check your OpenRouter configuration or account status.",
+            f"The AI service could not complete the request with model '{model_to_use}' ({last_error_str or 'Please verify your API key and network connection'}).",
             status_code=502,
         )
 
