@@ -170,7 +170,7 @@ class GeminiClient:
     """
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         self.model = model or os.getenv("OPENROUTER_MODEL") or DEFAULT_MODEL
         self.enable_web_search = os.getenv("ENABLE_WEB_SEARCH", "true").lower() in ("true", "1", "yes")
 
@@ -194,7 +194,14 @@ class GeminiClient:
 
     def _get_api_key(self) -> Optional[str]:
         """Dynamically resolve API key from instance or environment."""
-        key = self.api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
+        # Prioritize GEMINI_API_KEY first for Google AI Studio
+        gemini_k = os.getenv("GEMINI_API_KEY")
+        if gemini_k:
+            gemini_k = str(gemini_k).strip().strip("\"'").strip()
+            if not gemini_k.startswith("your_") and "change-me" not in gemini_k and gemini_k:
+                return gemini_k
+
+        key = self.api_key or os.getenv("OPENROUTER_API_KEY")
         if key:
             key = str(key).strip().strip("\"'").strip()
             if key.startswith("your_") or "change-me" in key or not key:
