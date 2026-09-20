@@ -336,7 +336,8 @@ class GeminiClient:
             # Google AI Studio expects model names without "google/" prefix
             if raw.startswith("google/"):
                 raw = raw[7:]
-            if raw == "gemini-3.7-flash":
+            # Map preview/unsupported names to active Google AI Studio models
+            if raw in ("gemini-3.1-flash-lite", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.0-flash"):
                 raw = "gemini-2.5-flash"
             return raw
         if raw in ("google/gemini-2.0-flash-001", "gemini-2.0-flash-001"):
@@ -561,16 +562,24 @@ class GeminiClient:
         # -----------------------------------------------------------------------
         # Step 2: Resilient Fallback Models
         # -----------------------------------------------------------------------
-        fallback_models = [
-            "google/gemini-2.5-flash",
-            "google/gemini-3.7-flash",
-            "google/gemini-3.6-flash",
-            "google/gemini-3.1-flash-lite",
-            "inclusionai/ling-3.0-flash-vl:free",
-            "dots-studio/dots-3-note-preview:free",
-            "nex-agi/nex-n2.5-mini:free",
-            "nex-agi/nex-n2.5-pro:free",
-        ]
+        if getattr(self, "is_google_direct", False):
+            fallback_models = [
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash",
+                "gemini-1.5-pro",
+            ]
+        else:
+            fallback_models = [
+                "google/gemini-2.5-flash",
+                "google/gemini-3.7-flash",
+                "google/gemini-3.6-flash",
+                "google/gemini-3.1-flash-lite",
+                "inclusionai/ling-3.0-flash-vl:free",
+                "dots-studio/dots-3-note-preview:free",
+                "nex-agi/nex-n2.5-mini:free",
+                "nex-agi/nex-n2.5-pro:free",
+            ]
 
         for fb_model in fallback_models:
             if fb_model == model_to_use:
