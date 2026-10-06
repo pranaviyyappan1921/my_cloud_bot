@@ -53,6 +53,7 @@ from utils.image_generator import image_generator, ImageGenerationError
 from utils.video_generator import video_generator, VideoGenerationError
 from utils.scheduler import task_manager, parse_natural_language_schedule, BackgroundScheduler
 from utils.translator import TranslationService, TranslationError, SUPPORTED_LANGUAGES
+from plugins.plugin_manager import plugin_manager
 
 # ---------------------------------------------------------------------------
 # Load environment variables
@@ -263,9 +264,10 @@ def health():
     except Exception:
         azure_sql_status = False
 
+    p_stats = plugin_manager.get_stats()
     return jsonify({
         "status": "ok",
-        "service": "Cloud-Based AI Chatbot with File Analysis",
+        "service": "Cloud-Based AI Chatbot with File Analysis and AI Plugins",
         "provider": "OpenRouter (OpenAI-compatible)",
         "model": gemini_client.model,
         "available_models": [
@@ -278,24 +280,48 @@ def health():
         "web_search": gemini_client.enable_web_search,
         "azure_blob_connected": azure_blob_status,
         "azure_sql_connected": azure_sql_status,
+        "plugins_connected": p_stats["connected_plugins"],
+        "plugins_enabled": p_stats["enabled_plugins"],
         "max_upload_size_mb": 10,
-        "features": ["chat", "streaming", "web_search", "file_analysis", "image_generation", "video_generation", "translation", "scheduled_tasks"],
+        "features": ["chat", "streaming", "web_search", "file_analysis", "image_generation", "video_generation", "translation", "scheduled_tasks", "plugins"],
     }), 200
 
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
     """
-    Handles a synchronous chat turn with web grounding, document Q&A, and vision.
+    Handles a synchronous chat turn with web grounding, document Q&A, vision, and AI plugin tools.
     """
     try:
         user_message, file_context, file_name, image_bytes, image_mime, model_param, effort_param, use_web_search, history, err = _process_chat_request(request)
         if err is not None or user_message is None or history is None:
             return err if err is not None else (jsonify({"error": "Invalid request parameters."}), 400)
 
+        sid = _get_or_create_session_id()
+
+        # Check automatic AI plugin tool execution
+        plugin_match = plugin_manager.detect_and_execute_plugin(
+            message=user_message,
+            file_context=file_context,
+            file_name=file_name,
+            session_id=sid,
+        )
+        plugin_info = None
+        prompt_message = user_message
+        if plugin_match:
+            p_name, t_name, p_res, p_context = plugin_match
+            plugin_info = {
+                "name": p_name,
+                "tool": t_name,
+                "summary": p_res.get("summary"),
+                "duration_ms": p_res.get("duration_ms"),
+                "data": p_res.get("data"),
+            }
+            prompt_message = f"{user_message}\n\n{p_context}"
+
         try:
             reply = gemini_client.generate_reply(
-                message=user_message,
+                message=prompt_message,
                 history=history,
                 file_text_context=file_context,
                 image_bytes=image_bytes,
@@ -305,7 +331,9 @@ def chat():
                 use_web_search_override=use_web_search,
             )
         except GeminiClientError as e:
-            if e.status_code in (402, 429) and file_context:
+            if plugin_info and plugin_info.get("summary"):
+                reply = f"**Plugin Result ({plugin_info['name']}):**\n\n{plugin_info['summary']}"
+            elif e.status_code in (402, 429) and file_context:
                 logger.info("Using structured document analysis fallback for %s due to quota limit...", file_name)
                 reply = generate_document_analysis_report(file_name or "Uploaded Document", file_context, user_message)
             elif e.status_code in (402, 429):
@@ -335,12 +363,10 @@ def chat():
 
         # Persist conversation and messages to Azure SQL if available
         try:
-            sid = _get_or_create_session_id()
             from utils.database import get_engine
             from sqlalchemy import text
             engine = get_engine()
             with engine.begin() as conn:
-                # Find or create conversation
                 conv_res = conn.execute(
                     text("SELECT TOP 1 id FROM conversations WHERE session_id = :sid ORDER BY updated_at DESC"),
                     {"sid": sid}
@@ -376,6 +402,7 @@ def chat():
             "model": model_param or gemini_client.model,
             "effort": effort_param,
             "web_search": use_web_search if use_web_search is not None else gemini_client.is_current_query(user_message),
+            "plugin_used": plugin_info,
         }), 200
 
     except Exception as e:
@@ -388,19 +415,41 @@ def chat():
 @app.route("/api/chat/stream", methods=["POST"])
 def chat_stream():
     """
-    Handles Server-Sent Events (SSE) streaming chat responses with web grounding.
+    Handles Server-Sent Events (SSE) streaming chat responses with web grounding & AI plugins.
     """
     user_message, file_context, file_name, image_bytes, image_mime, model_param, effort_param, use_web_search, history, err = _process_chat_request(request)
     if err is not None or user_message is None or history is None:
         return err if err is not None else (jsonify({"error": "Invalid request parameters."}), 400)
 
+    sid = _get_or_create_session_id()
+
+    # Check automatic AI plugin tool execution
+    plugin_match = plugin_manager.detect_and_execute_plugin(
+        message=user_message,
+        file_context=file_context,
+        file_name=file_name,
+        session_id=sid,
+    )
+    plugin_info = None
+    prompt_message = user_message
+    if plugin_match:
+        p_name, t_name, p_res, p_context = plugin_match
+        plugin_info = {
+            "name": p_name,
+            "tool": t_name,
+            "summary": p_res.get("summary"),
+            "duration_ms": p_res.get("duration_ms"),
+            "data": p_res.get("data"),
+        }
+        prompt_message = f"{user_message}\n\n{p_context}"
+
     def event_stream() -> Any:
         try:
-            yield f"data: {json.dumps({'type': 'start', 'model': model_param or gemini_client.model, 'file_name': file_name})}\n\n"
+            yield f"data: {json.dumps({'type': 'start', 'model': model_param or gemini_client.model, 'file_name': file_name, 'plugin_used': plugin_info})}\n\n"
 
             accumulated_chunks = []
             for chunk in gemini_client.generate_reply_stream(
-                message=user_message,
+                message=prompt_message,
                 history=history,
                 file_text_context=file_context,
                 image_bytes=image_bytes,
@@ -414,17 +463,21 @@ def chat_stream():
 
             full_reply = "".join(accumulated_chunks)
             if not full_reply.strip():
-                if file_context:
+                if plugin_info and plugin_info.get("summary"):
+                    full_reply = f"**Plugin Result ({plugin_info['name']}):**\n\n{plugin_info['summary']}"
+                elif file_context:
                     full_reply = generate_document_analysis_report(file_name or "Uploaded Document", file_context, user_message)
                 else:
                     full_reply = "I apologize, but no text response could be generated. Please try asking your question again."
                 yield f"data: {json.dumps({'type': 'chunk', 'text': full_reply})}\n\n"
 
-            yield f"data: {json.dumps({'type': 'done', 'reply': full_reply, 'file_name': file_name})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'reply': full_reply, 'file_name': file_name, 'plugin_used': plugin_info})}\n\n"
 
         except GeminiClientError as e:
             logger.warning("Streaming AI client error (%d): %s", e.status_code, e.message)
-            if e.status_code in (402, 429):
+            if plugin_info and plugin_info.get("summary"):
+                fallback_reply = f"**Plugin Result ({plugin_info['name']}):**\n\n{plugin_info['summary']}"
+            elif e.status_code in (402, 429):
                 if file_context:
                     fallback_reply = generate_document_analysis_report(file_name or "Uploaded Document", file_context, user_message)
                 else:
@@ -436,10 +489,10 @@ def chat_stream():
                         "2. **Option 2 (Top Up Credits)**: Add credits to your OpenRouter account at [openrouter.ai/settings/credits](https://openrouter.ai/settings/credits).\n"
                         "3. **Option 3**: Retry in a few moments as public capacity refreshes."
                     )
-                yield f"data: {json.dumps({'type': 'chunk', 'text': fallback_reply})}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'reply': fallback_reply, 'file_name': file_name})}\n\n"
             else:
-                yield f"data: {json.dumps({'type': 'error', 'error': e.message, 'code': e.status_code})}\n\n"
+                fallback_reply = f"Error: {e.message}"
+            yield f"data: {json.dumps({'type': 'chunk', 'text': fallback_reply})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'reply': fallback_reply, 'file_name': file_name, 'plugin_used': plugin_info})}\n\n"
 
         except Exception as e:
             logger.exception("Unexpected error in streaming response: %s", e)
@@ -754,6 +807,144 @@ def translate_file_endpoint():
     except Exception as e:
         logger.exception("File translation failed: %s", e)
         return jsonify({"success": False, "error": f"File translation failed: {str(e)}"}), 500
+
+
+# ---------------------------------------------------------------------------
+# AI Plugin Marketplace Routes & REST APIs
+# ---------------------------------------------------------------------------
+@app.route("/plugins")
+def plugins_view():
+    """Serves index page directly opening the Apps / Plugins Marketplace view."""
+    return render_template("index.html")
+
+
+@app.route("/api/plugins", methods=["GET"])
+def list_plugins_endpoint():
+    """Lists available marketplace plugins with optional category and search filters."""
+    category = request.args.get("category")
+    search_query = request.args.get("q")
+    connected_only = request.args.get("connected", "").lower() in ("true", "1", "yes")
+
+    plugins_list = plugin_manager.list_plugins(
+        category=category,
+        search_query=search_query,
+        connected_only=connected_only,
+    )
+    stats = plugin_manager.get_stats()
+    return jsonify({
+        "success": True,
+        "plugins": plugins_list,
+        "total": len(plugins_list),
+        "stats": stats,
+    }), 200
+
+
+@app.route("/api/plugins/<plugin_id>", methods=["GET"])
+def get_plugin_endpoint(plugin_id):
+    """Retrieves metadata, tools, and permissions for a specific plugin."""
+    plugin = plugin_manager.get_plugin(plugin_id)
+    if not plugin:
+        return jsonify({"success": False, "error": f"Plugin '{plugin_id}' not found."}), 404
+    return jsonify({"success": True, "plugin": plugin.to_dict()}), 200
+
+
+@app.route("/api/plugins/<plugin_id>/connect", methods=["POST"])
+def connect_plugin_endpoint(plugin_id):
+    """Connects a plugin with optional credentials/configuration."""
+    data = request.get_json(silent=True) or request.form or {}
+    config = data.get("config") if isinstance(data, dict) else {}
+    success, message, plugin_data = plugin_manager.connect_plugin(plugin_id, config=config)
+    if not success:
+        return jsonify({"success": False, "error": message}), 404
+    return jsonify({"success": True, "message": message, "plugin": plugin_data}), 200
+
+
+@app.route("/api/plugins/<plugin_id>/disconnect", methods=["POST"])
+def disconnect_plugin_endpoint(plugin_id):
+    """Disconnects a plugin and resets its runtime state."""
+    success, message, plugin_data = plugin_manager.disconnect_plugin(plugin_id)
+    if not success:
+        return jsonify({"success": False, "error": message}), 404
+    return jsonify({"success": True, "message": message, "plugin": plugin_data}), 200
+
+
+@app.route("/api/plugins/<plugin_id>/enable", methods=["POST"])
+def enable_plugin_endpoint(plugin_id):
+    """Enables an active connected plugin."""
+    success, message, plugin_data = plugin_manager.enable_plugin(plugin_id)
+    if not success:
+        return jsonify({"success": False, "error": message}), 400
+    return jsonify({"success": True, "message": message, "plugin": plugin_data}), 200
+
+
+@app.route("/api/plugins/<plugin_id>/disable", methods=["POST"])
+def disable_plugin_endpoint(plugin_id):
+    """Disables a connected plugin without disconnecting credentials."""
+    success, message, plugin_data = plugin_manager.disable_plugin(plugin_id)
+    if not success:
+        return jsonify({"success": False, "error": message}), 400
+    return jsonify({"success": True, "message": message, "plugin": plugin_data}), 200
+
+
+@app.route("/api/plugins/<plugin_id>/permissions", methods=["PUT", "POST"])
+def update_plugin_permissions_endpoint(plugin_id):
+    """Updates granular permission toggles for a plugin."""
+    data = request.get_json(silent=True) or request.form or {}
+    permissions = data.get("permissions", {})
+    if not isinstance(permissions, dict):
+        return jsonify({"success": False, "error": "Invalid permissions payload. Expected dictionary of permission_id -> bool."}), 400
+    success, message, plugin_data = plugin_manager.update_permissions(plugin_id, permissions)
+    if not success:
+        return jsonify({"success": False, "error": message}), 400
+    return jsonify({"success": True, "message": message, "plugin": plugin_data}), 200
+
+
+@app.route("/api/plugins/<plugin_id>/execute", methods=["POST"])
+def execute_plugin_tool_endpoint(plugin_id):
+    """Directly executes a plugin tool with permission and argument validation."""
+    sid = _get_or_create_session_id()
+    data = request.get_json(silent=True) or request.form or {}
+    tool_name = (data.get("tool_name") or data.get("action") or "").strip()
+    params = data.get("params") or data.get("parameters") or {}
+    if not isinstance(params, dict):
+        params = {}
+
+    if not tool_name:
+        return jsonify({"success": False, "error": "tool_name parameter is required."}), 400
+
+    result = plugin_manager.execute_tool(
+        plugin_id=plugin_id,
+        tool_name=tool_name,
+        params=params,
+        session_id=sid,
+    )
+    status_code = 200 if result.get("success") else 400
+    return jsonify(result), status_code
+
+
+@app.route("/api/plugins/logs", methods=["GET"])
+def get_plugin_logs_endpoint():
+    """Returns plugin execution telemetry logs."""
+    plugin_id = request.args.get("plugin_id")
+    status = request.args.get("status")
+    limit = int(request.args.get("limit", 100) or 100)
+    logs = plugin_manager.get_logs(plugin_id=plugin_id, status=status, limit=limit)
+    return jsonify({"success": True, "logs": logs, "total": len(logs)}), 200
+
+
+@app.route("/api/plugins/logs", methods=["DELETE"])
+def clear_plugin_logs_endpoint():
+    """Clears plugin execution logs."""
+    plugin_id = request.args.get("plugin_id")
+    cleared = plugin_manager.clear_logs(plugin_id=plugin_id)
+    return jsonify({"success": True, "cleared_count": cleared, "message": f"Cleared {cleared} log entries."}), 200
+
+
+@app.route("/api/plugins/stats", methods=["GET"])
+def get_plugin_stats_endpoint():
+    """Returns summary analytics and execution statistics for the plugin ecosystem."""
+    stats = plugin_manager.get_stats()
+    return jsonify({"success": True, "stats": stats}), 200
 
 
 # ---------------------------------------------------------------------------

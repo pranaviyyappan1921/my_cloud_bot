@@ -21,6 +21,8 @@ def get_connection_string():
 def get_engine():
     connection_string = get_connection_string()
 
+    # Convert the normal SQL Server connection string
+    # into a format SQLAlchemy can use with pyodbc.
     connection_url = (
         "mssql+pyodbc:///?odbc_connect="
         + quote_plus(connection_string)
@@ -29,9 +31,6 @@ def get_engine():
     return create_engine(
         connection_url,
         pool_pre_ping=True,
-        connect_args={
-            "timeout": 30
-        }
     )
 
 

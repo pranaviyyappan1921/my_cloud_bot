@@ -16,12 +16,14 @@ uploads/*
 static/generated/images/*
 static/generated/videos/*
 !static/generated/videos/sample_city.mp4
+data/plugin_logs.json
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+.pytest_cache/
 
 # Azure
 .azure/

@@ -37,6 +37,15 @@ from openai import (
     APITimeoutError,
 )
 
+from utils.file_processor import (
+    generate_document_analysis_report,
+)
+from utils.math_analyzer import (
+    detect_math_content,
+    build_math_reasoning_prompt_enhancement,
+    generate_fallback_math_report,
+)
+
 logger = logging.getLogger("chatbot.client")
 
 # Active verified OpenRouter default model
@@ -45,18 +54,41 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 REQUEST_TIMEOUT_SECONDS = 45.0
 MAX_RETRIES = 2
 
-# General-purpose AI Assistant instruction
-SYSTEM_INSTRUCTION = """You are a highly capable, intelligent, and helpful general-purpose AI assistant.
+# General-purpose AI Assistant instruction with Advanced Mathematical Analysis Engine
+SYSTEM_INSTRUCTION = """You are a highly capable, intelligent, and helpful general-purpose AI assistant equipped with an Advanced Mathematical Reasoning and Application Assistant capability.
 
 Core Capabilities:
 1. General Knowledge & Reasoning:
    - Provide accurate, comprehensive, and well-reasoned answers across science, history, arts, philosophy, and daily life.
    - For complex questions, provide structured step-by-step explanations.
-2. Programming & Technical Computing:
+2. Advanced Mathematical Reasoning & Cross-Domain Application:
+   - Whenever the user enters an equation, formula, numerical problem, matrix, graph-related expression, calculus problem, probability/statistics problem, or mathematical concept:
+     a. Concept Identification: Automatically recognize the mathematical content, identify the relevant concept, underlying discipline (e.g., High Performance Computing, AI/ML, Data Science, Control Systems, Calculus, Linear Algebra), and core significance.
+     b. Variable & Symbol Breakdown: Thoroughly explain every variable, symbol, parameter, coefficient, index, and unit involved.
+     c. Mathematical Formulation: State the exact governing formula/equation using standard LaTeX formatting ($...$ for inline, $$...$$ for display equations).
+     d. Step-by-Step Derivation / Solution: Provide a clear, rigorous, step-by-step derivation, evaluation, or algebraic working with intermediate arithmetic shown.
+     e. Result Verification & Sanity Check: Rigorously verify the result through substitution, dimensional analysis, edge cases, or asymptotic behavior.
+     f. Real-World Applications & Cross-Domain Impact: Detail concrete applications across:
+        * AI / Machine Learning & Deep Learning (loss functions, optimization, neural layers, backpropagation, attention mechanisms)
+        * Data Science & Statistics (regression, covariance, PCA, hypothesis testing, confidence intervals)
+        * Computer Vision & Graphics (affine transforms, convolution kernels, ray-tracing intersection, homography, 3D projection)
+        * Robotics & Control Systems (PID controllers, forward/inverse kinematics, DH parameters, state-space models)
+        * Signal Processing & Information Theory (Fourier transform, filtering, Shannon entropy, frequency analysis)
+        * Engineering & Physics (equations of motion, fluid dynamics, electrical circuits, heat diffusion, stress-strain)
+        * Cryptography & Security (modular arithmetic, RSA, Diffie-Hellman, elliptic curves, hashing)
+        * Optimization & Operations Research (linear programming, convex minimization, Lagrange multipliers)
+        * Quantitative Finance (risk modeling, Black-Scholes option pricing, compound interest, portfolio optimization)
+        * Cloud Computing & High Performance Computing (Speedup S = Ts / Tp, Amdahl's Law, Gustafson's Law, parallel efficiency E = S/N, GPU GEMM FLOPs, distributed scaling)
+     g. Graph / Visualization / Practical Example: Whenever appropriate, provide an ASCII / markdown visualization, table of values, real-world example, or practical code implementation.
+   - Core Domain Reference Standards:
+     * Parallel Computing Speedup S = Ts / Tp: Identify as parallel performance speedup; explain Ts (serial execution time on 1 core) and Tp (parallel execution time on p cores); calculate speedup and efficiency E = S/p; explain evaluation of parallel workloads, Amdahl's Law (strong scaling limits), and Gustafson's Law (weak scaling).
+     * Linear Equation y = mx + c: Explain slope m, y-intercept c, independent feature x, dependent target y; explain its fundamental role in linear regression, prediction, coordinate geometry, line of best fit, and gradient descent.
+     * Quadratic Discriminant D = b^2 - 4ac: Explain quadratic coefficients a, b, c; explain root classification (D > 0 two real roots, D = 0 one repeated root, D < 0 two complex conjugate roots); explain applications in ray-tracing intersection tests, control system damping stability, and trajectory collision detection.
+     * Matrices: Explain dimensions, linear transformations, neural network weights and activations, robotic DH kinematics, image filtering kernels, and GPU BLAS GEMM acceleration.
+     * Derivatives & Gradients: Explain partial derivatives, Jacobian, Hessian, and gradient vector ∇f; explain role in loss minimization, backpropagation in deep learning, physics equations of motion, and PID control.
+3. Programming & Technical Computing:
    - Provide clean, efficient, bug-free code with explanations in Python, JavaScript, TypeScript, C, C++, Java, Rust, Go, SQL, HTML/CSS, Bash, and modern frameworks.
    - Use standard Markdown fenced code blocks with appropriate language tags.
-3. Mathematics & Engineering:
-   - Solve mathematical, physical, engineering, and data science problems with explicit derivations and formulas.
 4. Cloud Computing & DevOps:
    - Deep expertise in Microsoft Azure, AWS, Google Cloud, Docker, Kubernetes, Linux, CI/CD, and microservices architecture.
 5. Writing & Summarization:
@@ -69,6 +101,7 @@ Core Capabilities:
 
 Interaction Style:
 - Answer the user's question directly in fluent natural language.
+- For mathematical expressions, use crisp LaTeX notation ($...$ and $$...$$).
 - For simple greetings ("hello", "hi", "hey"), respond with a friendly, natural greeting (1-2 sentences).
 - Never output raw tool-calling tags or code tokens like <|tool_call_start|> directly to the user.
 - Present information with clean Markdown (headings, bullet points, bold key terms).
@@ -299,9 +332,16 @@ class GeminiClient:
         image_bytes: Optional[bytes] = None,
         image_mime: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Constructs chat completion messages list."""
+        """Constructs chat completion messages list with math and multimodal context."""
+        math_info = detect_math_content(message)
+        math_directive = build_math_reasoning_prompt_enhancement(math_info) if math_info.get("is_math") else ""
+        
+        system_prompt = SYSTEM_INSTRUCTION
+        if math_directive:
+            system_prompt = f"{SYSTEM_INSTRUCTION}\n\n{math_directive}"
+
         messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_INSTRUCTION}
+            {"role": "system", "content": system_prompt}
         ]
 
         # Append rolling history
@@ -722,14 +762,32 @@ class GeminiClient:
                     logger.warning("Free model fallback %s failed: %s", fm, e)
                     break
 
-        # 3. If file context was present, provide structured document report
+        # 3. If mathematical query, provide structured mathematical analysis report
+        user_msg_str = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                c = m.get("content")
+                if isinstance(c, str):
+                    user_msg_str = c
+                elif isinstance(c, list):
+                    for part in c:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            user_msg_str = part.get("text", "")
+                            break
+                break
+
+        math_check = detect_math_content(user_msg_str)
+        if math_check.get("is_math") and math_check.get("matched_concepts"):
+            return generate_fallback_math_report(user_msg_str, math_check)
+
+        # 4. If file context was present, provide structured document report
         if file_text_context:
             user_msg = messages[-1].get("content", "") if messages else ""
             if isinstance(user_msg, list):
                 user_msg = "Summarize document"
             return generate_document_analysis_report("Uploaded Document", file_text_context, str(user_msg))
 
-        # 4. Return user-friendly guidance notice
+        # 5. Return user-friendly guidance notice
         return (
             "⚠️ **OpenRouter Credit Balance Notice**\n\n"
             "Your OpenRouter API account currently has zero remaining token credits (Status 402).\n\n"

@@ -7,6 +7,7 @@ def create_tables():
 
     with engine.begin() as connection:
 
+        # Conversations table
         connection.execute(text("""
             IF NOT EXISTS (
                 SELECT * FROM sysobjects
@@ -21,6 +22,7 @@ def create_tables():
             )
         """))
 
+        # Messages table
         connection.execute(text("""
             IF NOT EXISTS (
                 SELECT * FROM sysobjects
@@ -40,6 +42,7 @@ def create_tables():
             )
         """))
 
+        # Uploaded files table
         connection.execute(text("""
             IF NOT EXISTS (
                 SELECT * FROM sysobjects

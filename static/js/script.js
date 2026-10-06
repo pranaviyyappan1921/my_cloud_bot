@@ -32,13 +32,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const chatView = document.getElementById("chatView");
   const scheduledView = document.getElementById("scheduledView");
   const translationView = document.getElementById("translationView");
+  const pluginsView = document.getElementById("pluginsView");
   const sidebarScheduledBtn = document.getElementById("sidebarScheduledBtn");
   const sidebarTranslationBtn = document.getElementById("sidebarTranslationBtn");
+  const sidebarPluginsBtn = document.getElementById("sidebarPluginsBtn");
   const sidebarSettingsBtn = document.getElementById("sidebarSettingsBtn");
   const taskSettingsModal = document.getElementById("taskSettingsModal");
   const closeSettingsModalBtn = document.getElementById("closeSettingsModalBtn");
 
-  let currentView = "chat"; // "chat" | "scheduled" | "translation"
+  let currentView = "chat"; // "chat" | "scheduled" | "translation" | "plugins"
 
   // Unique session ID for isolating scheduled tasks per user/browser
   let userSessionId = localStorage.getItem("cloud_ai_user_session_id");
@@ -53,9 +55,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (chatView) chatView.classList.toggle("hidden", viewName !== "chat");
     if (scheduledView) scheduledView.classList.toggle("hidden", viewName !== "scheduled");
     if (translationView) translationView.classList.toggle("hidden", viewName !== "translation");
+    if (pluginsView) pluginsView.classList.toggle("hidden", viewName !== "plugins");
 
     if (sidebarScheduledBtn) sidebarScheduledBtn.classList.toggle("active", viewName === "scheduled");
     if (sidebarTranslationBtn) sidebarTranslationBtn.classList.toggle("active", viewName === "translation");
+    if (sidebarPluginsBtn) sidebarPluginsBtn.classList.toggle("active", viewName === "plugins");
 
     if (viewName === "chat") {
       const current = getActiveSession();
@@ -74,6 +78,8 @@ document.addEventListener("DOMContentLoaded", () => {
       loadScheduledTasks();
     } else if (viewName === "translation") {
       initTranslationView();
+    } else if (viewName === "plugins") {
+      loadPluginsMarketplace();
     }
   }
 
@@ -83,6 +89,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (sidebarTranslationBtn) {
     sidebarTranslationBtn.addEventListener("click", () => switchToView("translation"));
+  }
+
+  if (sidebarPluginsBtn) {
+    sidebarPluginsBtn.addEventListener("click", () => switchToView("plugins"));
   }
 
   if (sidebarSettingsBtn) {
@@ -181,6 +191,30 @@ document.addEventListener("DOMContentLoaded", () => {
   const modelPopoverMenu = document.getElementById("modelPopoverMenu");
   const micBtn = document.getElementById("micBtn");
   const themeToggleBtn = document.getElementById("themeToggleBtn");
+  const webSearchToggleBtn = document.getElementById("webSearchToggleBtn");
+
+  // Web Search State (Persistent)
+  const WEB_SEARCH_STORAGE_KEY = "cloud_ai_web_search_enabled";
+  let isWebSearchEnabled = localStorage.getItem(WEB_SEARCH_STORAGE_KEY) !== "false";
+
+  function updateWebSearchUI() {
+    if (webSearchToggleBtn) {
+      webSearchToggleBtn.classList.toggle("active", isWebSearchEnabled);
+      webSearchToggleBtn.title = isWebSearchEnabled
+        ? "Web Search: Enabled (Grounding with live web data)"
+        : "Web Search: Disabled (Using model knowledge)";
+    }
+  }
+  updateWebSearchUI();
+
+  if (webSearchToggleBtn) {
+    webSearchToggleBtn.addEventListener("click", () => {
+      isWebSearchEnabled = !isWebSearchEnabled;
+      localStorage.setItem(WEB_SEARCH_STORAGE_KEY, isWebSearchEnabled ? "true" : "false");
+      updateWebSearchUI();
+      showToast(isWebSearchEnabled ? "Web Search Enabled 🌐" : "Web Search Disabled 🌐");
+    });
+  }
 
   // Chat Context Menu & Toast
   const chatContextMenu = document.getElementById("chatItemContextMenu");
@@ -1253,6 +1287,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (attachedObj) formData.append("file", attachedObj);
     formData.append("model", selectedModel);
     formData.append("effort", selectedEffort);
+    formData.append("web_search", isWebSearchEnabled ? "true" : "false");
 
     const rolling = session.messages.slice(0, -1).map((m) => ({
       role: m.role === "user" ? "user" : "model",
@@ -1267,7 +1302,9 @@ document.addEventListener("DOMContentLoaded", () => {
     setSendingState(true);
     currentAbortController = new AbortController();
 
-    const indicatorText = attachedObj ? "Analyzing attached file with Gemini..." : "AI is thinking...";
+    const indicatorText = attachedObj
+      ? "Analyzing attached file with Gemini..."
+      : (isWebSearchEnabled ? "Searching web and synthesizing response..." : "AI is thinking...");
     const typingIndicator = appendTypingIndicatorDOM(indicatorText);
 
     let accumulatedText = "";
@@ -1277,93 +1314,135 @@ document.addEventListener("DOMContentLoaded", () => {
     let cursorSpan = null;
 
     try {
-      const response = await fetch("/api/chat/stream", {
-        method: "POST",
-        body: formData,
-        signal: currentAbortController.signal,
-      });
-
-      if (!response.ok) {
-        let errDetail = `Server returned status ${response.status}`;
-        try {
-          const errJson = await response.json();
-          if (errJson && errJson.error) {
-            errDetail = errJson.error;
-          }
-        } catch (_) {}
-        throw new Error(errDetail);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-
+      let streamSucceeded = false;
       let streamError = null;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        const response = await fetch("/api/chat/stream", {
+          method: "POST",
+          body: formData,
+          signal: currentAbortController.signal,
+        });
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop();
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data:")) continue;
-          const jsonStr = trimmed.replace(/^data:\s*/, "");
-
-          let data;
+        if (!response.ok) {
+          let errDetail = null;
           try {
-            data = JSON.parse(jsonStr);
-          } catch (jsonErr) {
-            console.warn("Error parsing SSE chunk:", jsonErr);
-            continue;
+            const errJson = await response.json();
+            if (errJson && errJson.error) {
+              errDetail = errJson.error;
+            }
+          } catch (_) {}
+
+          if (!errDetail) {
+            if (response.status === 401) errDetail = "Authentication error: Invalid or missing OPENROUTER_API_KEY.";
+            else if (response.status === 402) errDetail = "Credit limit reached (402). Your OpenRouter credit balance is low.";
+            else if (response.status === 408 || response.status === 504) errDetail = "Request timed out. The server or AI provider took too long to respond.";
+            else if (response.status === 429) errDetail = "Rate limit exceeded (429). Please wait a moment before sending another message.";
+            else if (response.status >= 500) errDetail = `AI provider service error (${response.status}).`;
+            else errDetail = `Server returned error (${response.status}).`;
+          }
+          throw new Error(errDetail);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const jsonStr = trimmed.replace(/^data:\s*/, "");
+
+            let data;
+            try {
+              data = JSON.parse(jsonStr);
+            } catch (jsonErr) {
+              continue;
+            }
+
+            if (data.type === "chunk" && data.text) {
+              if (typingIndicator && typingIndicator.parentElement) {
+                typingIndicator.remove();
+              }
+
+              if (!aiBubbleEl) {
+                const aiDOM = createStreamingAiMessageDOM(userDisplayText, attachedName);
+                aiRowEl = aiDOM.row;
+                aiBubbleEl = aiDOM.bubble;
+                aiWrapEl = aiDOM.contentWrap;
+                cursorSpan = aiDOM.cursor;
+                messagesEl.appendChild(aiRowEl);
+              }
+
+              accumulatedText += data.text;
+              const renderedHtml = renderMarkdown(accumulatedText);
+              aiBubbleEl.innerHTML = `<div class="markdown-body">${renderedHtml}</div>`;
+              aiBubbleEl.appendChild(cursorSpan);
+              scrollToBottom(false, false);
+            } else if (data.type === "done") {
+              if (data.reply && !accumulatedText) {
+                accumulatedText = data.reply;
+              }
+              streamSucceeded = true;
+            } else if (data.type === "error") {
+              streamError = data.error || "An error occurred during streaming.";
+              break;
+            }
           }
 
-          if (data.type === "chunk" && data.text) {
-            if (typingIndicator && typingIndicator.parentElement) {
-              typingIndicator.remove();
-            }
-
-            if (!aiBubbleEl) {
-              const aiDOM = createStreamingAiMessageDOM(userDisplayText, attachedName);
-              aiRowEl = aiDOM.row;
-              aiBubbleEl = aiDOM.bubble;
-              aiWrapEl = aiDOM.contentWrap;
-              cursorSpan = aiDOM.cursor;
-              messagesEl.appendChild(aiRowEl);
-            }
-
-            accumulatedText += data.text;
-            const renderedHtml = renderMarkdown(accumulatedText);
-            aiBubbleEl.innerHTML = `<div class="markdown-body">${renderedHtml}</div>`;
-            aiBubbleEl.appendChild(cursorSpan);
-            scrollToBottom(false, false);
-          } else if (data.type === "done") {
-            if (data.reply && !accumulatedText) {
-              accumulatedText = data.reply;
-            }
-          } else if (data.type === "error") {
-            streamError = data.error || "An error occurred during streaming.";
+          if (streamError) {
             break;
           }
         }
 
         if (streamError) {
-          break;
+          throw new Error(streamError);
         }
-      }
 
-      if (streamError) {
-        throw new Error(streamError);
+      } catch (streamErr) {
+        if (streamErr.name === "AbortError") {
+          throw streamErr;
+        }
+
+        // If stream failed before any chunks were received, attempt automatic fallback to synchronous /api/chat
+        if (!accumulatedText) {
+          console.warn("SSE stream failed or unavailable, falling back to /api/chat...", streamErr);
+          const syncRes = await fetch("/api/chat", {
+            method: "POST",
+            body: formData,
+            signal: currentAbortController.signal,
+          });
+
+          const syncData = await syncRes.json();
+          if (!syncRes.ok) {
+            let msg = syncData.error;
+            if (!msg) {
+              if (syncRes.status === 401) msg = "Invalid or missing OPENROUTER_API_KEY.";
+              else if (syncRes.status === 402) msg = "OpenRouter credit limit reached (402).";
+              else if (syncRes.status === 429) msg = "AI rate limit exceeded (429). Please wait a moment.";
+              else msg = `Server error (${syncRes.status}).`;
+            }
+            throw new Error(msg);
+          }
+          accumulatedText = syncData.reply || "";
+        } else {
+          throw streamErr;
+        }
       }
 
       if (cursorSpan && cursorSpan.parentElement) cursorSpan.remove();
       if (typingIndicator && typingIndicator.parentElement) typingIndicator.remove();
 
       if (!accumulatedText) {
-        accumulatedText = "⚠️ **Notice:** The AI server did not return a response. Please check your API key in `.env` or try again.";
+        accumulatedText = "⚠️ **Notice:** The AI server did not return a response. Please verify your OpenRouter configuration or try again.";
       }
 
       const aiTimestamp = Date.now();
@@ -2158,7 +2237,32 @@ document.addEventListener("DOMContentLoaded", () => {
     return escapeHtml(content);
   }
 
+  function renderMathInContainer(container) {
+    if (!container) return;
+    if (window.renderMathInElement) {
+      try {
+        window.renderMathInElement(container, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "\\(", right: "\\)", display: false },
+            { left: "$", right: "$", display: false }
+          ],
+          throwOnError: false,
+          ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+        });
+      } catch (err) {
+        console.warn("KaTeX render error:", err);
+      }
+    }
+  }
+
   function attachCodeCopyButtons(container) {
+    if (!container) return;
+    
+    // Render LaTeX / Mathematical formulas in container
+    renderMathInContainer(container);
+
     const preBlocks = container.querySelectorAll("pre");
     preBlocks.forEach((pre) => {
       if (pre.querySelector(".code-header")) return;
@@ -3544,15 +3648,792 @@ document.addEventListener("DOMContentLoaded", () => {
     renderTranslationHistory();
   }
 
-  // Initialize UI & Sessions
+  // ---------------------------------------------------------------------------
+  // AI Plugin Marketplace Controller
+  // ---------------------------------------------------------------------------
+  const pluginsGridContainer = document.getElementById("pluginsGridContainer");
+  const pluginsConnectedBadge = document.getElementById("pluginsConnectedBadge");
+  const pluginSearchInput = document.getElementById("pluginSearchInput");
+  const clearPluginSearchBtn = document.getElementById("clearPluginSearchBtn");
+  const filterConnectedOnlyCheckbox = document.getElementById("filterConnectedOnlyCheckbox");
+  const openPluginLogsBtn = document.getElementById("openPluginLogsBtn");
+
+  // Connect Modal Elements
+  const pluginConnectModal = document.getElementById("pluginConnectModal");
+  const closeConnectModalBtn = document.getElementById("closeConnectModalBtn");
+  const cancelConnectModalBtn = document.getElementById("cancelConnectModalBtn");
+  const confirmConnectPluginBtn = document.getElementById("confirmConnectPluginBtn");
+  const connectModalPluginId = document.getElementById("connectModalPluginId");
+  const connectModalIconBox = document.getElementById("connectModalIconBox");
+  const connectModalTitle = document.getElementById("connectModalTitle");
+  const connectModalCategory = document.getElementById("connectModalCategory");
+  const connectModalDescription = document.getElementById("connectModalDescription");
+  const connectModalPermissionsList = document.getElementById("connectModalPermissionsList");
+  const connectModalAuthGroup = document.getElementById("connectModalAuthGroup");
+  const connectModalApiKey = document.getElementById("connectModalApiKey");
+
+  // Manage Modal Elements
+  const pluginManageModal = document.getElementById("pluginManageModal");
+  const closeManageModalBtn = document.getElementById("closeManageModalBtn");
+  const manageModalIconBox = document.getElementById("manageModalIconBox");
+  const manageModalTitle = document.getElementById("manageModalTitle");
+  const manageModalStatusBadge = document.getElementById("manageModalStatusBadge");
+  const manageModalVersion = document.getElementById("manageModalVersion");
+  const managePermissionsTogglesList = document.getElementById("managePermissionsTogglesList");
+  const manageToolsSchemaList = document.getElementById("manageToolsSchemaList");
+  const managePluginToggleEnabled = document.getElementById("managePluginToggleEnabled");
+  const managePluginToggleLabel = document.getElementById("managePluginToggleLabel");
+  const manageDisconnectBtn = document.getElementById("manageDisconnectBtn");
+  const manageSaveCloseBtn = document.getElementById("manageSaveCloseBtn");
+
+  // Sandbox Runner Elements
+  const sandboxToolSelect = document.getElementById("sandboxToolSelect");
+  const sandboxParamsInput = document.getElementById("sandboxParamsInput");
+  const runSandboxToolBtn = document.getElementById("runSandboxToolBtn");
+  const sandboxOutputArea = document.getElementById("sandboxOutputArea");
+  const sandboxOutputPre = document.getElementById("sandboxOutputPre");
+  const sandboxDurationBadge = document.getElementById("sandboxDurationBadge");
+
+  // Logs Modal Elements
+  const pluginLogsModal = document.getElementById("pluginLogsModal");
+  const closePluginLogsModalBtn = document.getElementById("closePluginLogsModalBtn");
+  const pluginLogsTableBody = document.getElementById("pluginLogsTableBody");
+  const logsEmptyNotice = document.getElementById("logsEmptyNotice");
+  const logsPluginFilterSelect = document.getElementById("logsPluginFilterSelect");
+  const logsStatusFilterSelect = document.getElementById("logsStatusFilterSelect");
+  const refreshPluginLogsBtn = document.getElementById("refreshPluginLogsBtn");
+  const clearPluginLogsBtn = document.getElementById("clearPluginLogsBtn");
+
+  let allPluginsCache = [];
+  let selectedPluginCategory = "all";
+  let pluginSearchQuery = "";
+  let filterConnectedOnly = false;
+  let activeManagePlugin = null;
+
+  async function loadPluginsMarketplace() {
+    try {
+      if (pluginsGridContainer) {
+        pluginsGridContainer.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">Loading plugin marketplace... ⏳</div>`;
+      }
+      const res = await fetch("/api/plugins");
+      if (!res.ok) throw new Error("Failed to load plugins");
+      const data = await res.json();
+      allPluginsCache = data.plugins || [];
+
+      // Update header badge
+      const connectedCount = allPluginsCache.filter((p) => p.is_connected).length;
+      if (pluginsConnectedBadge) {
+        pluginsConnectedBadge.textContent = `${connectedCount} Connected`;
+      }
+
+      // Populate logs plugin filter select
+      if (logsPluginFilterSelect) {
+        const currentVal = logsPluginFilterSelect.value;
+        logsPluginFilterSelect.innerHTML = `<option value="">All Plugins</option>`;
+        allPluginsCache.forEach((p) => {
+          const opt = document.createElement("option");
+          opt.value = p.id;
+          opt.textContent = p.name;
+          logsPluginFilterSelect.appendChild(opt);
+        });
+        logsPluginFilterSelect.value = currentVal;
+      }
+
+      renderPluginsList();
+    } catch (err) {
+      console.error("Error loading plugins:", err);
+      if (pluginsGridContainer) {
+        pluginsGridContainer.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: #ef4444;">Could not load plugins. Please check server connection.</div>`;
+      }
+    }
+  }
+
+  function renderPluginsList() {
+    if (!pluginsGridContainer) return;
+    pluginsGridContainer.innerHTML = "";
+
+    const q = pluginSearchQuery.trim().toLowerCase();
+    const filtered = allPluginsCache.filter((p) => {
+      if (filterConnectedOnly && !p.is_connected) return false;
+
+      if (selectedPluginCategory !== "all") {
+        const matchCategory = p.category.toLowerCase() === selectedPluginCategory.toLowerCase();
+        const matchTag = (p.tags || []).some((t) => t.toLowerCase() === selectedPluginCategory.toLowerCase());
+        if (!matchCategory && !matchTag) return false;
+      }
+
+      if (q) {
+        const inName = p.name.toLowerCase().includes(q);
+        const inDesc = p.description.toLowerCase().includes(q);
+        const inCat = p.category.toLowerCase().includes(q);
+        const inTags = (p.tags || []).some((t) => t.toLowerCase().includes(q));
+        if (!inName && !inDesc && !inCat && !inTags) return false;
+      }
+
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      pluginsGridContainer.innerHTML = `
+        <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted); background: var(--bg-card); border: 1.5px dashed var(--border-medium); border-radius: 16px;">
+          <div style="font-size: 36px; margin-bottom: 8px;">🔌</div>
+          <h4 style="font-size: 16px; font-weight: 600; color: var(--text-main); margin-bottom: 4px;">No matching apps or plugins found</h4>
+          <p style="font-size: 13px;">Try adjusting your search query or selecting a different category filter.</p>
+        </div>
+      `;
+      return;
+    }
+
+    filtered.forEach((plugin) => {
+      const card = document.createElement("div");
+      card.className = `plugin-card ${plugin.is_connected ? "connected" : ""}`;
+
+      const tagsHtml = (plugin.tags || [])
+        .slice(0, 4)
+        .map((t) => `<span class="plugin-tag-pill">${escapeHtml(t)}</span>`)
+        .join("");
+
+      const isConn = plugin.is_connected;
+      const isEn = plugin.is_enabled;
+
+      let statusBadgeHtml = "";
+      if (isConn) {
+        statusBadgeHtml = isEn
+          ? `<span class="plugin-status-badge connected">● Connected</span>`
+          : `<span class="plugin-status-badge available" style="color: #f59e0b;">⏸ Disabled</span>`;
+      } else {
+        statusBadgeHtml = `<span class="plugin-status-badge available">○ Available</span>`;
+      }
+
+      let actionsHtml = "";
+      if (!isConn) {
+        actionsHtml = `
+          <button type="button" class="btn-plugin-connect" data-plugin-id="${plugin.id}">
+            <span>+ Connect</span>
+          </button>
+        `;
+      } else {
+        actionsHtml = `
+          <div class="plugin-footer-left">
+            <span class="btn-plugin-connected-pill">✓ Connected</span>
+            <button type="button" class="btn-plugin-manage" data-plugin-id="${plugin.id}" title="Manage permissions and sandbox testing">
+              ⚙ Manage
+            </button>
+          </div>
+          <button type="button" class="btn-plugin-disconnect" data-plugin-id="${plugin.id}" title="Disconnect plugin">
+            ✕ Disconnect
+          </button>
+        `;
+      }
+
+      card.innerHTML = `
+        <div class="plugin-card-top">
+          <div class="plugin-icon-badge" style="background: ${plugin.icon_bg || "var(--accent-blue)"};">
+            ${plugin.icon || "🔌"}
+          </div>
+          <div class="plugin-header-info">
+            <div class="plugin-title-row">
+              <h3 class="plugin-name" title="${escapeHtml(plugin.name)}">${escapeHtml(plugin.name)}</h3>
+              ${statusBadgeHtml}
+            </div>
+            <span class="plugin-category-tag">${escapeHtml(plugin.category)} • v${escapeHtml(plugin.version || "1.0.0")}</span>
+          </div>
+        </div>
+        <p class="plugin-desc" title="${escapeHtml(plugin.description)}">${escapeHtml(plugin.description)}</p>
+        <div class="plugin-tags-row">
+          ${tagsHtml}
+        </div>
+        <div class="plugin-card-footer">
+          ${actionsHtml}
+        </div>
+      `;
+
+      // Event listeners on card buttons
+      const connectBtn = card.querySelector(".btn-plugin-connect");
+      if (connectBtn) {
+        connectBtn.addEventListener("click", () => openConnectModal(plugin));
+      }
+
+      const manageBtn = card.querySelector(".btn-plugin-manage");
+      if (manageBtn) {
+        manageBtn.addEventListener("click", () => openManageModal(plugin));
+      }
+
+      const disconnectBtn = card.querySelector(".btn-plugin-disconnect");
+      if (disconnectBtn) {
+        disconnectBtn.addEventListener("click", () => handleDisconnectPlugin(plugin.id, plugin.name));
+      }
+
+      pluginsGridContainer.appendChild(card);
+    });
+  }
+
+  // Category Tab Selection
+  document.querySelectorAll(".plugin-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".plugin-tab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      selectedPluginCategory = tab.dataset.category || "all";
+      renderPluginsList();
+    });
+  });
+
+  // Search Bar Input
+  if (pluginSearchInput) {
+    pluginSearchInput.addEventListener("input", (e) => {
+      pluginSearchQuery = e.target.value;
+      if (clearPluginSearchBtn) {
+        clearPluginSearchBtn.classList.toggle("hidden", !pluginSearchQuery);
+      }
+      renderPluginsList();
+    });
+  }
+
+  if (clearPluginSearchBtn) {
+    clearPluginSearchBtn.addEventListener("click", () => {
+      if (pluginSearchInput) {
+        pluginSearchInput.value = "";
+        pluginSearchQuery = "";
+        clearPluginSearchBtn.classList.add("hidden");
+        renderPluginsList();
+        pluginSearchInput.focus();
+      }
+    });
+  }
+
+  // Connected-only filter checkbox
+  if (filterConnectedOnlyCheckbox) {
+    filterConnectedOnlyCheckbox.addEventListener("change", (e) => {
+      filterConnectedOnly = e.target.checked;
+      renderPluginsList();
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connect App Modal
+  // ---------------------------------------------------------------------------
+  function openConnectModal(plugin) {
+    if (!pluginConnectModal) return;
+    connectModalPluginId.value = plugin.id;
+    if (connectModalIconBox) {
+      connectModalIconBox.textContent = plugin.icon || "🔌";
+      connectModalIconBox.style.background = plugin.icon_bg || "var(--accent-blue)";
+    }
+    if (connectModalTitle) connectModalTitle.textContent = `Connect ${plugin.name}`;
+    if (connectModalCategory) connectModalCategory.textContent = `${plugin.category} • v${plugin.version || "1.0.0"}`;
+    if (connectModalDescription) connectModalDescription.textContent = plugin.description;
+
+    // Requested permissions
+    if (connectModalPermissionsList) {
+      connectModalPermissionsList.innerHTML = "";
+      if (plugin.permissions && plugin.permissions.length > 0) {
+        plugin.permissions.forEach((perm) => {
+          const item = document.createElement("div");
+          item.className = "permission-check-item";
+          item.innerHTML = `
+            <span class="permission-check-icon">✓</span>
+            <div>
+              <strong>${escapeHtml(perm.name)}</strong>
+              <div style="font-size: 11.5px; color: var(--text-muted);">${escapeHtml(perm.description)}</div>
+            </div>
+          `;
+          connectModalPermissionsList.appendChild(item);
+        });
+      } else {
+        connectModalPermissionsList.innerHTML = `<div style="font-size: 12.5px; color: var(--text-muted);">Standard runtime permissions only.</div>`;
+      }
+    }
+
+    if (connectModalAuthGroup) {
+      connectModalAuthGroup.classList.toggle("hidden", !plugin.requires_auth);
+      if (connectModalApiKey) connectModalApiKey.value = "";
+    }
+
+    pluginConnectModal.classList.remove("hidden");
+    pluginConnectModal.style.display = "flex";
+  }
+
+  function closeConnectModal() {
+    if (pluginConnectModal) {
+      pluginConnectModal.classList.add("hidden");
+      pluginConnectModal.style.display = "none";
+    }
+  }
+
+  if (closeConnectModalBtn) closeConnectModalBtn.addEventListener("click", closeConnectModal);
+  if (cancelConnectModalBtn) cancelConnectModalBtn.addEventListener("click", closeConnectModal);
+  if (pluginConnectModal) {
+    pluginConnectModal.addEventListener("click", (e) => {
+      if (e.target === pluginConnectModal) closeConnectModal();
+    });
+  }
+
+  if (confirmConnectPluginBtn) {
+    confirmConnectPluginBtn.addEventListener("click", async () => {
+      const pluginId = connectModalPluginId.value;
+      if (!pluginId) return;
+
+      const apiKey = connectModalApiKey ? connectModalApiKey.value.trim() : "";
+      const config = apiKey ? { api_key: apiKey } : {};
+
+      confirmConnectPluginBtn.disabled = true;
+      confirmConnectPluginBtn.textContent = "Connecting...";
+
+      try {
+        const res = await fetch(`/api/plugins/${encodeURIComponent(pluginId)}/connect`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || "Could not connect plugin");
+        }
+        closeConnectModal();
+        showToast(`Connected ${data.plugin?.name || pluginId} successfully! ✓`);
+        await loadPluginsMarketplace();
+      } catch (err) {
+        alert(`Connection error: ${err.message}`);
+      } finally {
+        confirmConnectPluginBtn.disabled = false;
+        confirmConnectPluginBtn.textContent = "Connect App";
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Manage Permissions & Sandbox Modal
+  // ---------------------------------------------------------------------------
+  function openManageModal(plugin) {
+    if (!pluginManageModal) return;
+    activeManagePlugin = plugin;
+
+    if (manageModalIconBox) {
+      manageModalIconBox.textContent = plugin.icon || "🔌";
+      manageModalIconBox.style.background = plugin.icon_bg || "var(--accent-blue)";
+    }
+    if (manageModalTitle) manageModalTitle.textContent = plugin.name;
+    if (manageModalVersion) manageModalVersion.textContent = `v${plugin.version || "1.0.0"} • Created by ${plugin.author || "Cloud AI"}`;
+
+    if (manageModalStatusBadge) {
+      if (plugin.is_enabled) {
+        manageModalStatusBadge.className = "status-pill-mini active";
+        manageModalStatusBadge.textContent = "🟢 Connected & Enabled";
+      } else {
+        manageModalStatusBadge.className = "status-pill-mini paused";
+        manageModalStatusBadge.textContent = "⏸ Disabled";
+      }
+    }
+
+    if (managePluginToggleEnabled) {
+      managePluginToggleEnabled.checked = plugin.is_enabled;
+    }
+    if (managePluginToggleLabel) {
+      managePluginToggleLabel.textContent = plugin.is_enabled ? "Plugin Enabled" : "Plugin Disabled";
+    }
+
+    // Populate Tab 1: Permissions
+    renderManagePermissionsTab(plugin);
+
+    // Populate Tab 2: Tools Schemas
+    renderManageToolsTab(plugin);
+
+    // Populate Tab 3: Sandbox
+    renderManageSandboxTab(plugin);
+
+    // Reset active modal tab to 'permissions'
+    switchModalTab("permissions");
+
+    pluginManageModal.classList.remove("hidden");
+    pluginManageModal.style.display = "flex";
+  }
+
+  function closeManageModal() {
+    if (pluginManageModal) {
+      pluginManageModal.classList.add("hidden");
+      pluginManageModal.style.display = "none";
+    }
+    activeManagePlugin = null;
+  }
+
+  if (closeManageModalBtn) closeManageModalBtn.addEventListener("click", closeManageModal);
+  if (manageSaveCloseBtn) manageSaveCloseBtn.addEventListener("click", closeManageModal);
+  if (pluginManageModal) {
+    pluginManageModal.addEventListener("click", (e) => {
+      if (e.target === pluginManageModal) closeManageModal();
+    });
+  }
+
+  // Modal Tab Switching
+  function switchModalTab(tabName) {
+    document.querySelectorAll(".modal-tab-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.modalTab === tabName);
+    });
+    const tabPerm = document.getElementById("manageTabPermissions");
+    const tabTools = document.getElementById("manageTabTools");
+    const tabSandbox = document.getElementById("manageTabSandbox");
+
+    if (tabPerm) tabPerm.classList.toggle("hidden", tabName !== "permissions");
+    if (tabTools) tabTools.classList.toggle("hidden", tabName !== "tools");
+    if (tabSandbox) tabSandbox.classList.toggle("hidden", tabName !== "sandbox");
+  }
+
+  document.querySelectorAll(".modal-tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => switchModalTab(btn.dataset.modalTab));
+  });
+
+  // Render Permissions Tab
+  function renderManagePermissionsTab(plugin) {
+    if (!managePermissionsTogglesList) return;
+    managePermissionsTogglesList.innerHTML = "";
+
+    if (!plugin.permissions || plugin.permissions.length === 0) {
+      managePermissionsTogglesList.innerHTML = `<div style="font-size: 13px; color: var(--text-muted); padding: 12px 0;">No configurable permissions for this app.</div>`;
+      return;
+    }
+
+    plugin.permissions.forEach((perm) => {
+      const row = document.createElement("div");
+      row.className = "perm-toggle-row";
+      row.innerHTML = `
+        <div class="perm-toggle-info">
+          <div class="perm-toggle-title">${escapeHtml(perm.name)}</div>
+          <div class="perm-toggle-desc">${escapeHtml(perm.description)}</div>
+        </div>
+        <label class="toggle-switch-wrap">
+          <input type="checkbox" class="perm-checkbox" data-perm-id="${perm.id}" ${perm.enabled ? "checked" : ""} />
+          <span class="toggle-slider"></span>
+        </label>
+      `;
+
+      const checkbox = row.querySelector(".perm-checkbox");
+      if (checkbox) {
+        checkbox.addEventListener("change", async (e) => {
+          const permId = e.target.dataset.permId;
+          const isChecked = e.target.checked;
+          try {
+            const res = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/permissions`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ permissions: { [permId]: isChecked } }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) throw new Error(data.error || "Update failed");
+            showToast(`Permission updated for ${plugin.name} ⚙`);
+            await loadPluginsMarketplace();
+          } catch (err) {
+            e.target.checked = !isChecked; // Revert
+            alert(`Error updating permission: ${err.message}`);
+          }
+        });
+      }
+
+      managePermissionsTogglesList.appendChild(row);
+    });
+  }
+
+  // Render Tools Schema Tab
+  function renderManageToolsTab(plugin) {
+    if (!manageToolsSchemaList) return;
+    manageToolsSchemaList.innerHTML = "";
+
+    if (!plugin.tools || plugin.tools.length === 0) {
+      manageToolsSchemaList.innerHTML = `<div style="font-size: 13px; color: var(--text-muted); padding: 12px 0;">No tools exposed.</div>`;
+      return;
+    }
+
+    plugin.tools.forEach((tool) => {
+      const card = document.createElement("div");
+      card.className = "tool-schema-card";
+      const paramsObj = tool.parameters?.properties || {};
+      const requiredList = tool.parameters?.required || [];
+      const paramKeys = Object.keys(paramsObj);
+
+      const paramsHtml = paramKeys.length > 0
+        ? paramKeys.map((pk) => {
+            const p = paramsObj[pk];
+            const isReq = requiredList.includes(pk) ? `<span style="color: #ef4444;">*required</span>` : `<span style="color: var(--text-muted);">optional</span>`;
+            return `• <strong>${escapeHtml(pk)}</strong> (<em>${p.type || "string"}</em>, ${isReq}): ${escapeHtml(p.description || "")}`;
+          }).join("<br/>")
+        : `<em>No parameters required.</em>`;
+
+      card.innerHTML = `
+        <div class="tool-name-code">⚡ ${escapeHtml(tool.name)}()</div>
+        <div class="tool-desc-text">${escapeHtml(tool.description)}</div>
+        <div class="tool-params-preview" style="background: var(--bg-sidebar-hover); padding: 8px 10px; border-radius: 6px; margin-top: 4px;">
+          ${paramsHtml}
+        </div>
+      `;
+      manageToolsSchemaList.appendChild(card);
+    });
+  }
+
+  // Render Sandbox Tab
+  function renderManageSandboxTab(plugin) {
+    if (!sandboxToolSelect) return;
+    sandboxToolSelect.innerHTML = "";
+
+    if (!plugin.tools || plugin.tools.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "No tools available";
+      sandboxToolSelect.appendChild(opt);
+      if (sandboxParamsInput) sandboxParamsInput.value = "{}";
+      return;
+    }
+
+    plugin.tools.forEach((tool, idx) => {
+      const opt = document.createElement("option");
+      opt.value = tool.name;
+      opt.textContent = `${tool.name} - ${tool.description.substring(0, 45)}...`;
+      sandboxToolSelect.appendChild(opt);
+    });
+
+    // Populate initial sample params
+    updateSandboxDefaultParams(plugin, plugin.tools[0]);
+
+    sandboxToolSelect.onchange = () => {
+      const selectedName = sandboxToolSelect.value;
+      const tool = plugin.tools.find((t) => t.name === selectedName);
+      if (tool) updateSandboxDefaultParams(plugin, tool);
+    };
+  }
+
+  function updateSandboxDefaultParams(plugin, tool) {
+    if (!sandboxParamsInput || !tool) return;
+    const sample = {};
+    const props = tool.parameters?.properties || {};
+    for (const [k, p] of Object.entries(props)) {
+      if (p.type === "number" || p.type === "integer") {
+        sample[k] = p.default !== undefined ? p.default : 100;
+      } else if (p.type === "array") {
+        sample[k] = [10, 20, 30, 40, 50];
+      } else if (p.type === "boolean") {
+        sample[k] = true;
+      } else {
+        if (k === "expression") sample[k] = "45 * 38 + sqrt(144)";
+        else if (k === "query") sample[k] = "AI latest breakthroughs 2026";
+        else if (k === "from_unit") sample[k] = "km";
+        else if (k === "to_unit") sample[k] = "mi";
+        else if (k === "file_name") sample[k] = "report.pdf";
+        else sample[k] = p.default || "example";
+      }
+    }
+    sandboxParamsInput.value = JSON.stringify(sample, null, 2);
+  }
+
+  if (runSandboxToolBtn) {
+    runSandboxToolBtn.addEventListener("click", async () => {
+      if (!activeManagePlugin) return;
+      const toolName = sandboxToolSelect.value;
+      if (!toolName) return;
+
+      let params = {};
+      try {
+        const raw = sandboxParamsInput.value.trim();
+        if (raw) params = JSON.parse(raw);
+      } catch (e) {
+        alert("Invalid JSON format in arguments field. Please verify formatting.");
+        return;
+      }
+
+      runSandboxToolBtn.disabled = true;
+      runSandboxToolBtn.textContent = "Executing...";
+
+      try {
+        const res = await fetch(`/api/plugins/${encodeURIComponent(activeManagePlugin.id)}/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tool_name: toolName, params }),
+        });
+        const data = await res.json();
+        if (sandboxOutputArea && sandboxOutputPre) {
+          sandboxOutputArea.classList.remove("hidden");
+          sandboxOutputPre.textContent = JSON.stringify(data, null, 2);
+          if (sandboxDurationBadge) {
+            sandboxDurationBadge.textContent = `${data.duration_ms || 0} ms`;
+          }
+        }
+      } catch (err) {
+        if (sandboxOutputArea && sandboxOutputPre) {
+          sandboxOutputArea.classList.remove("hidden");
+          sandboxOutputPre.textContent = `Execution Error: ${err.message}`;
+        }
+      } finally {
+        runSandboxToolBtn.disabled = false;
+        runSandboxToolBtn.textContent = "▶ Execute Tool";
+      }
+    });
+  }
+
+  // Manage Enable/Disable Switch
+  if (managePluginToggleEnabled) {
+    managePluginToggleEnabled.addEventListener("change", async (e) => {
+      if (!activeManagePlugin) return;
+      const isEnabled = e.target.checked;
+      const endpoint = isEnabled ? "enable" : "disable";
+
+      try {
+        const res = await fetch(`/api/plugins/${encodeURIComponent(activeManagePlugin.id)}/${endpoint}`, {
+          method: "POST",
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || "Toggle failed");
+
+        if (managePluginToggleLabel) {
+          managePluginToggleLabel.textContent = isEnabled ? "Plugin Enabled" : "Plugin Disabled";
+        }
+        if (manageModalStatusBadge) {
+          if (isEnabled) {
+            manageModalStatusBadge.className = "status-pill-mini active";
+            manageModalStatusBadge.textContent = "🟢 Connected & Enabled";
+          } else {
+            manageModalStatusBadge.className = "status-pill-mini paused";
+            manageModalStatusBadge.textContent = "⏸ Disabled";
+          }
+        }
+        showToast(`${activeManagePlugin.name} ${isEnabled ? "enabled" : "disabled"} ⚡`);
+        await loadPluginsMarketplace();
+      } catch (err) {
+        e.target.checked = !isEnabled;
+        alert(`Failed to toggle plugin: ${err.message}`);
+      }
+    });
+  }
+
+  // Manage Disconnect Button
+  if (manageDisconnectBtn) {
+    manageDisconnectBtn.addEventListener("click", () => {
+      if (!activeManagePlugin) return;
+      handleDisconnectPlugin(activeManagePlugin.id, activeManagePlugin.name);
+    });
+  }
+
+  async function handleDisconnectPlugin(pluginId, pluginName) {
+    if (!confirm(`Are you sure you want to disconnect "${pluginName}"? This will disable its capabilities in chat.`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/plugins/${encodeURIComponent(pluginId)}/disconnect`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || "Disconnect failed");
+
+      closeManageModal();
+      showToast(`Disconnected ${pluginName} ✕`);
+      await loadPluginsMarketplace();
+    } catch (err) {
+      alert(`Disconnect error: ${err.message}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plugin Activity & Execution Logs Modal
+  // ---------------------------------------------------------------------------
+  function openPluginLogsModal() {
+    if (!pluginLogsModal) return;
+    loadPluginLogs();
+    pluginLogsModal.classList.remove("hidden");
+    pluginLogsModal.style.display = "flex";
+  }
+
+  function closePluginLogsModal() {
+    if (pluginLogsModal) {
+      pluginLogsModal.classList.add("hidden");
+      pluginLogsModal.style.display = "none";
+    }
+  }
+
+  if (openPluginLogsBtn) openPluginLogsBtn.addEventListener("click", openPluginLogsModal);
+  if (closePluginLogsModalBtn) closePluginLogsModalBtn.addEventListener("click", closePluginLogsModal);
+  if (pluginLogsModal) {
+    pluginLogsModal.addEventListener("click", (e) => {
+      if (e.target === pluginLogsModal) closePluginLogsModal();
+    });
+  }
+
+  async function loadPluginLogs() {
+    if (!pluginLogsTableBody) return;
+    pluginLogsTableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; padding: 20px; color: var(--text-muted);">Loading logs... ⏳</td></tr>`;
+
+    const pluginId = logsPluginFilterSelect ? logsPluginFilterSelect.value : "";
+    const status = logsStatusFilterSelect ? logsStatusFilterSelect.value : "";
+
+    try {
+      const params = new URLSearchParams();
+      if (pluginId) params.set("plugin_id", pluginId);
+      if (status && status !== "all") params.set("status", status);
+
+      const res = await fetch(`/api/plugins/logs?${params.toString()}`);
+      if (!res.ok) throw new Error("Failed to fetch logs");
+      const data = await res.json();
+      const logs = data.logs || [];
+
+      pluginLogsTableBody.innerHTML = "";
+      if (logs.length === 0) {
+        if (logsEmptyNotice) logsEmptyNotice.classList.remove("hidden");
+        return;
+      }
+
+      if (logsEmptyNotice) logsEmptyNotice.classList.add("hidden");
+
+      logs.forEach((log) => {
+        const tr = document.createElement("tr");
+        const dateStr = log.timestamp ? new Date(log.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--";
+        const statusClass = log.status === "success" ? "success" : log.status === "blocked" ? "blocked" : "error";
+        const summaryText = log.output_summary || log.error_message || log.status;
+
+        tr.innerHTML = `
+          <td style="font-family: var(--font-mono, monospace); font-size: 11.5px;">${escapeHtml(dateStr)}</td>
+          <td><strong>${escapeHtml(log.plugin_name || log.plugin_id)}</strong></td>
+          <td><code>${escapeHtml(log.action)}</code></td>
+          <td><span class="status-badge-table ${statusClass}">${escapeHtml(log.status.toUpperCase())}</span></td>
+          <td style="font-family: var(--font-mono, monospace);">${log.duration_ms || 0} ms</td>
+          <td style="max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(summaryText)}">
+            ${escapeHtml(summaryText)}
+          </td>
+        `;
+        pluginLogsTableBody.appendChild(tr);
+      });
+    } catch (err) {
+      pluginLogsTableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; padding: 20px; color: #ef4444;">Error loading logs: ${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  if (refreshPluginLogsBtn) refreshPluginLogsBtn.addEventListener("click", loadPluginLogs);
+  if (logsPluginFilterSelect) logsPluginFilterSelect.addEventListener("change", loadPluginLogs);
+  if (logsStatusFilterSelect) logsStatusFilterSelect.addEventListener("change", loadPluginLogs);
+
+  if (clearPluginLogsBtn) {
+    clearPluginLogsBtn.addEventListener("click", async () => {
+      if (!confirm("Clear all recorded plugin telemetry and activity logs?")) return;
+      try {
+        const res = await fetch("/api/plugins/logs", { method: "DELETE" });
+        const data = await res.json();
+        showToast(data.message || "Logs cleared ✕");
+        loadPluginLogs();
+      } catch (err) {
+        alert(`Failed to clear logs: ${err.message}`);
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Initialization & Route Parsing
+  // ---------------------------------------------------------------------------
   renderSidebar();
   loadActiveChat();
 
-  // If URL hash or path requests translation or scheduled view directly
+  // If URL hash or path requests translation, scheduled, or plugins view directly
   if (window.location.pathname.includes("/translation") || window.location.hash === "#translation") {
     switchToView("translation");
   } else if (window.location.pathname.includes("/scheduled") || window.location.hash === "#scheduled") {
     switchToView("scheduled");
+  } else if (window.location.pathname.includes("/plugins") || window.location.hash === "#plugins") {
+    switchToView("plugins");
   }
 });
+
 

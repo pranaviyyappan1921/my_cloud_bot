@@ -16,8 +16,13 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 
+  <!-- KaTeX for Advanced Mathematical and Scientific Typesetting -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
   <!-- Cache-busting query parameter forces the browser to load latest CSS and JS -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=17.0" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=22.0" />
 </head>
 <body>
   <div class="app-layout">
@@ -78,6 +83,12 @@
         <button id="sidebarTranslationBtn" class="btn-sidebar-translation" title="AI Translation into any language">
           <span class="translation-nav-icon">🌐</span>
           <span class="translation-nav-label">Translation</span>
+        </button>
+
+        <!-- Apps / Plugins Marketplace Navigation Button -->
+        <button id="sidebarPluginsBtn" class="btn-sidebar-plugins" title="AI Plugins & Integrations Marketplace">
+          <span class="plugins-nav-icon">🔌</span>
+          <span class="plugins-nav-label">Apps / Plugins</span>
         </button>
 
         <!-- Search Conversations Bar -->
@@ -240,6 +251,17 @@
               <div class="card-body">
                 <strong>Summarize a Document</strong>
                 <p>Extract key takeaways & bullet points.</p>
+              </div>
+              <div class="card-arrow">›</div>
+            </div>
+
+            <div class="example-card" data-prompt="Analyze the parallel computing speedup formula S = Ts / Tp. Explain the variables, calculate speedup, verify the result, and explain its real-world applications in HPC and Cloud Computing.">
+              <div class="card-icon-circle">
+                <span class="card-emoji">📐</span>
+              </div>
+              <div class="card-body">
+                <strong>Mathematical Analysis</strong>
+                <p>Formulas, step-by-step proofs & applications.</p>
               </div>
               <div class="card-arrow">›</div>
             </div>
@@ -438,6 +460,16 @@
                   </div>
                 </div>
               </div>
+
+              <!-- Web Search Toggle Button (Live Grounding) -->
+              <button type="button" id="webSearchToggleBtn" class="btn-tool-toggle btn-web-search active" aria-label="Toggle web search" title="Web Search: Live web data grounding (Click to toggle)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="2" y1="12" x2="22" y2="12"></line>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                </svg>
+                <span class="search-toggle-label">Search</span>
+              </button>
             </div>
 
             <!-- Right Controls: Microphone (Speech-to-Text), Stop Button & Send Button -->
@@ -791,6 +823,66 @@
       </div>
     </div> <!-- /translationView -->
 
+    <!-- View 4: Apps / Plugins Marketplace View -->
+    <div id="pluginsView" class="view-panel hidden">
+      <!-- Plugins Top Header -->
+      <header class="plugins-header">
+        <div class="plugins-header-left">
+          <div class="plugins-badge-row">
+            <span class="plugins-header-icon">🔌</span>
+            <h2 class="plugins-title">Apps & Plugins</h2>
+            <span id="pluginsConnectedBadge" class="plugins-stat-badge">4 Connected</span>
+          </div>
+          <p class="plugins-subtitle">Discover and connect powerful plugins to expand AI capabilities, connect cloud storage, and automate workflows.</p>
+        </div>
+        <div class="plugins-header-right">
+          <button type="button" id="openPluginLogsBtn" class="btn-plugin-logs-header" title="View live plugin execution telemetry & logs">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+            <span>Activity Logs</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Scrollable Marketplace Body -->
+      <div class="plugins-scroll-wrap">
+        <div class="plugins-inner-container">
+
+          <!-- Search & Filter Controls -->
+          <div class="plugins-controls-bar">
+            <!-- Search Bar -->
+            <div class="plugins-search-wrap">
+              <svg class="plugins-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              <input type="text" id="pluginSearchInput" class="plugin-search-input" placeholder="Search apps, tools, and integrations (e.g. Calculator, GitHub, Azure)..." autocomplete="off" />
+              <button type="button" id="clearPluginSearchBtn" class="plugin-search-clear hidden" title="Clear search">✕</button>
+            </div>
+
+            <!-- Connected Only Toggle Filter -->
+            <label class="connected-filter-toggle" title="Filter to show only connected plugins">
+              <input type="checkbox" id="filterConnectedOnlyCheckbox" />
+              <span class="toggle-custom"></span>
+              <span class="toggle-label">Connected Only</span>
+            </label>
+          </div>
+
+          <!-- Category Navigation Tabs -->
+          <div class="plugin-category-tabs" role="tablist">
+            <button type="button" class="plugin-tab active" data-category="all">All</button>
+            <button type="button" class="plugin-tab" data-category="Popular">Popular</button>
+            <button type="button" class="plugin-tab" data-category="Developer Tools">Developer Tools</button>
+            <button type="button" class="plugin-tab" data-category="Productivity">Productivity</button>
+            <button type="button" class="plugin-tab" data-category="AI & Search">AI & Search</button>
+            <button type="button" class="plugin-tab" data-category="Cloud">Cloud</button>
+          </div>
+
+          <!-- Active Plugins Section / Cards Grid -->
+          <div id="pluginsGridContainer" class="plugins-cards-grid">
+            <!-- Rendered dynamically by script.js -->
+          </div>
+
+        </div>
+      </div>
+    </div> <!-- /pluginsView -->
+
   </main>
 
   </div>
@@ -948,8 +1040,194 @@
           <div class="settings-item-label">Scheduled Storage</div>
           <div class="settings-item-value"><code>data/scheduled_tasks.json</code> (Session-Isolated)</div>
         </div>
+        <div class="settings-item">
+          <div class="settings-item-label">AI Plugins Ecosystem</div>
+          <div class="settings-item-value"><span class="status-pill-mini active">🟢 13 Plugins</span> (Modular Sandbox)</div>
+        </div>
         <div class="settings-note">
           <strong>Azure Note:</strong> For continuous 24/7 background execution on Azure App Service Free (F1), configure an external Azure Logic App or Timer Function to ping <code>/api/tasks/tick</code>.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Plugin Connection Modal -->
+  <div id="pluginConnectModal" class="modal-overlay hidden" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <div id="connectModalIconBox" class="plugin-modal-icon-badge">🔌</div>
+          <div>
+            <h3 id="connectModalTitle">Connect App</h3>
+            <span id="connectModalCategory" class="modal-subtitle">Productivity</span>
+          </div>
+        </div>
+        <button type="button" id="closeConnectModalBtn" class="btn-modal-close" title="Close">✕</button>
+      </div>
+
+      <div class="modal-body-form">
+        <input type="hidden" id="connectModalPluginId" value="" />
+        <p id="connectModalDescription" class="plugin-modal-desc"></p>
+
+        <!-- Permissions Requested Box -->
+        <div class="plugin-permissions-box">
+          <h4 class="permissions-box-heading">Requested Permissions</h4>
+          <div id="connectModalPermissionsList" class="permissions-checklist">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Optional Config / Key Input (shown if plugin requires auth) -->
+        <div id="connectModalAuthGroup" class="form-group hidden">
+          <label for="connectModalApiKey">API Key / Access Token (Optional for Sandbox Mode)</label>
+          <input type="password" id="connectModalApiKey" class="form-input" placeholder="Enter API key or leave blank for test sandbox..." autocomplete="off" />
+          <span class="field-hint">Token is stored securely in your session and never logged.</span>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" id="cancelConnectModalBtn" class="btn-modal-secondary">Cancel</button>
+          <button type="button" id="confirmConnectPluginBtn" class="btn-modal-primary">Connect App</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Plugin Manage Permissions & Settings Modal -->
+  <div id="pluginManageModal" class="modal-overlay hidden" style="display: none;">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <div id="manageModalIconBox" class="plugin-modal-icon-badge">🧮</div>
+          <div>
+            <div class="manage-modal-title-row">
+              <h3 id="manageModalTitle">Calculator & Math Engine</h3>
+              <span id="manageModalStatusBadge" class="status-pill-mini active">🟢 Connected & Enabled</span>
+            </div>
+            <span id="manageModalVersion" class="modal-subtitle">v1.2.0 • Created by Cloud AI</span>
+          </div>
+        </div>
+        <button type="button" id="closeManageModalBtn" class="btn-modal-close" title="Close">✕</button>
+      </div>
+
+      <div class="manage-modal-body">
+        <!-- Tab navigation inside modal: Permissions | Tools & Capabilities | Test Sandbox -->
+        <div class="modal-tab-bar">
+          <button type="button" class="modal-tab-btn active" data-modal-tab="permissions">Permissions</button>
+          <button type="button" class="modal-tab-btn" data-modal-tab="tools">Exposed Tools</button>
+          <button type="button" class="modal-tab-btn" data-modal-tab="sandbox">Test Sandbox</button>
+        </div>
+
+        <!-- Tab 1: Permissions Management -->
+        <div id="manageTabPermissions" class="modal-tab-panel active">
+          <p class="tab-desc-text">Manage what actions this plugin is permitted to execute on your behalf.</p>
+          <div id="managePermissionsTogglesList" class="permissions-toggles-list">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Tab 2: Exposed Tools List -->
+        <div id="manageTabTools" class="modal-tab-panel hidden">
+          <p class="tab-desc-text">Tools and functions exposed by this plugin for AI function calling.</p>
+          <div id="manageToolsSchemaList" class="tools-schema-list">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Tab 3: Test Sandbox -->
+        <div id="manageTabSandbox" class="modal-tab-panel hidden">
+          <p class="tab-desc-text">Run a live tool execution to test arguments, schema validation, and outputs.</p>
+          <div class="sandbox-runner-box">
+            <div class="form-group">
+              <label for="sandboxToolSelect">Select Tool to Test</label>
+              <select id="sandboxToolSelect" class="form-select"></select>
+            </div>
+            <div class="form-group">
+              <label for="sandboxParamsInput">Tool Arguments (JSON format)</label>
+              <textarea id="sandboxParamsInput" class="form-textarea" rows="3" placeholder='{"expression": "45 * 38 + sqrt(144)"}'></textarea>
+            </div>
+            <button type="button" id="runSandboxToolBtn" class="btn-sandbox-run">▶ Execute Tool</button>
+            <div id="sandboxOutputArea" class="sandbox-output hidden">
+              <div class="sandbox-output-header">
+                <span>Output Result</span>
+                <span id="sandboxDurationBadge" class="sandbox-duration-badge">0 ms</span>
+              </div>
+              <pre id="sandboxOutputPre" class="sandbox-output-pre"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Modal Footer Actions: Enable/Disable Toggle + Disconnect -->
+        <div class="manage-modal-footer">
+          <div class="manage-footer-left">
+            <label class="toggle-switch-wrap">
+              <input type="checkbox" id="managePluginToggleEnabled" checked />
+              <span class="toggle-slider"></span>
+              <span id="managePluginToggleLabel" class="toggle-label-text">Plugin Enabled</span>
+            </label>
+          </div>
+          <div class="manage-footer-right">
+            <button type="button" id="manageDisconnectBtn" class="btn-modal-danger">Disconnect App</button>
+            <button type="button" id="manageSaveCloseBtn" class="btn-modal-primary">Done</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Plugin Execution Logs Modal -->
+  <div id="pluginLogsModal" class="modal-overlay hidden" style="display: none;">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="modal-icon">📜</span>
+          <div>
+            <h3>Plugin Activity & Execution Logs</h3>
+            <span class="modal-subtitle">Real-time telemetry, tool invocation records, and security audit logs</span>
+          </div>
+        </div>
+        <button type="button" id="closePluginLogsModalBtn" class="btn-modal-close" title="Close">✕</button>
+      </div>
+
+      <div class="logs-modal-body">
+        <!-- Filter bar -->
+        <div class="logs-filter-bar">
+          <div class="logs-filters-left">
+            <select id="logsPluginFilterSelect" class="form-select-sm">
+              <option value="">All Plugins</option>
+            </select>
+            <select id="logsStatusFilterSelect" class="form-select-sm">
+              <option value="all">All Statuses</option>
+              <option value="success">Success Only</option>
+              <option value="error">Errors Only</option>
+              <option value="blocked">Blocked Only</option>
+            </select>
+            <button type="button" id="refreshPluginLogsBtn" class="btn-filter-refresh" title="Refresh logs">🔄 Refresh</button>
+          </div>
+          <div class="logs-filters-right">
+            <button type="button" id="clearPluginLogsBtn" class="btn-logs-clear" title="Clear logs">🗑️ Clear Logs</button>
+          </div>
+        </div>
+
+        <!-- Logs Table / Entries List -->
+        <div class="logs-table-container">
+          <table class="logs-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Plugin</th>
+                <th>Action / Tool</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>Summary / Details</th>
+              </tr>
+            </thead>
+            <tbody id="pluginLogsTableBody">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+          <div id="logsEmptyNotice" class="logs-empty-notice hidden">
+            No plugin activity logs recorded yet.
+          </div>
         </div>
       </div>
     </div>
@@ -972,6 +1250,6 @@
     <button id="ctxDeleteBtn" class="context-item danger">🗑️ Delete chat</button>
   </div>
 
-  <script src="{{ url_for('static', filename='js/script.js') }}?v=20.0"></script>
+  <script src="{{ url_for('static', filename='js/script.js') }}?v=21.0"></script>
 </body>
 </html>

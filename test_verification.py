@@ -592,6 +592,51 @@ class ChatbotTestCase(unittest.TestCase):
         self.assertEqual(text, "Good morning")
         print("[PASSED] Natural language translation parsing test")
 
+    def test_30_live_query_detection(self):
+        """Verify robust live-query / current-information intent detection."""
+        from utils.gemini_client import is_live_query
+
+        # Live / time-sensitive queries -> MUST return True
+        self.assertTrue(is_live_query("What is the latest AI news?"))
+        self.assertTrue(is_live_query("What happened in technology today?"))
+        self.assertTrue(is_live_query("Who won today's major cricket match?"))
+        self.assertTrue(is_live_query("Current weather in London"))
+        self.assertTrue(is_live_query("What are the breaking updates this week?"))
+        self.assertTrue(is_live_query("Latest stock price of Microsoft"))
+        self.assertTrue(is_live_query("Tell me the score of the match"))
+        self.assertTrue(is_live_query("What is the latest version of Python?"))
+
+        # Evergreen / non-live queries -> MUST return False
+        self.assertFalse(is_live_query("Hello"))
+        self.assertFalse(is_live_query("Write a Python program to reverse a linked list"))
+        self.assertFalse(is_live_query("Explain quantum computing"))
+        self.assertFalse(is_live_query("What is Azure Blob Storage?"))
+        self.assertFalse(is_live_query("Solve the quadratic equation x^2 - 5x + 6 = 0"))
+        print("[PASSED] Live-query & non-live query detection test")
+
+    def test_31_web_search_ui_elements(self):
+        """Verify web search toggle button exists in index template and CSS styles."""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("webSearchToggleBtn", html)
+        self.assertIn("btn-web-search", html)
+        self.assertIn("search-toggle-label", html)
+        print("[PASSED] Web search toggle button UI test")
+
+    def test_32_health_endpoint_cloud_services(self):
+        """Verify /api/health returns azure_blob_connected, azure_sql_connected, and active model."""
+        res = self.client.get("/api/health")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertIn("azure_blob_connected", data)
+        self.assertIn("azure_sql_connected", data)
+        self.assertIn("model", data)
+        self.assertIn("web_search", data)
+        self.assertTrue(len(data["available_models"]) >= 4)
+        print("[PASSED] Health endpoint cloud services metadata test")
+
 
 if __name__ == "__main__":
     unittest.main()
+

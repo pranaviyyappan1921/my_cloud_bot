@@ -1,0 +1,114 @@
+{
+  "calculator": {
+    "is_connected": true,
+    "is_enabled": true,
+    "config": {},
+    "permissions": {
+      "math_compute": true,
+      "unit_conversion": true,
+      "statistics": true
+    }
+  },
+  "web_search": {
+    "is_connected": true,
+    "is_enabled": true,
+    "config": {},
+    "permissions": {
+      "web_search_query": true,
+      "web_fetch_page": true
+    }
+  },
+  "file_analysis": {
+    "is_connected": true,
+    "is_enabled": true,
+    "config": {},
+    "permissions": {
+      "doc_read": true,
+      "doc_summary": true
+    }
+  },
+  "azure_blob": {
+    "is_connected": true,
+    "is_enabled": true,
+    "config": {},
+    "permissions": {
+      "storage_read": true,
+      "storage_health": true
+    }
+  },
+  "gmail": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "gmail_read": true,
+      "gmail_draft": true
+    }
+  },
+  "github": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "github_read": true,
+      "github_upload": true,
+      "github_repo_create": true
+    }
+  },
+  "google_drive": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "drive_read": true
+    }
+  },
+  "outlook": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "outlook_read": true
+    }
+  },
+  "calendar": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "calendar_read": true
+    }
+  },
+  "slack": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "slack_send": true
+    }
+  },
+  "dropbox": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "dropbox_read": true
+    }
+  },
+  "notion": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "notion_read": true
+    }
+  },
+  "databases": {
+    "is_connected": false,
+    "is_enabled": false,
+    "config": {},
+    "permissions": {
+      "sql_readonly": true
+    }
+  }
+}
